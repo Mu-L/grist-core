@@ -1,7 +1,7 @@
 import BaseView from 'app/client/components/BaseView';
 import * as commands from 'app/client/components/commands';
 import {Cursor} from 'app/client/components/Cursor';
-import {FormLayoutNode, FormLayoutNodeType} from 'app/client/components/FormRenderer';
+import {FormLayoutNode, FormLayoutNodeType, patchLayoutSpec} from 'app/client/components/FormRenderer';
 import * as components from 'app/client/components/Forms/elements';
 import {NewBox} from 'app/client/components/Forms/Menu';
 import {BoxModel, LayoutModel, parseBox, Place} from 'app/client/components/Forms/Model';
@@ -15,13 +15,17 @@ import {localStorageBoolObs} from 'app/client/lib/localStorageObs';
 import {logTelemetryEvent} from 'app/client/lib/telemetry';
 import DataTableModel from 'app/client/models/DataTableModel';
 import {ViewFieldRec, ViewSectionRec} from 'app/client/models/DocModel';
+import {reportError} from 'app/client/models/errors';
+import {jsonObservable, SaveableObjObservable} from 'app/client/models/modelUtil';
 import {ShareRec} from 'app/client/models/entities/ShareRec';
 import {InsertColOptions} from 'app/client/models/entities/ViewSectionRec';
 import {docUrl, urlState} from 'app/client/models/gristUrlState';
 import {SortedRowSet} from 'app/client/models/rowset';
-import {showTransientTooltip} from 'app/client/ui/tooltips';
+import {hoverTooltip, showTransientTooltip} from 'app/client/ui/tooltips';
 import {cssButton} from 'app/client/ui2018/buttons';
 import {icon} from 'app/client/ui2018/icons';
+import {loadingSpinner} from 'app/client/ui2018/loaders';
+import {menuCssClass} from 'app/client/ui2018/menus';
 import {confirmModal} from 'app/client/ui2018/modals';
 import {INITIAL_FIELDS_COUNT} from 'app/common/Forms';
 import {isOwner} from 'app/common/roles';
@@ -31,6 +35,7 @@ import defaults from 'lodash/defaults';
 import isEqual from 'lodash/isEqual';
 import {v4 as uuidv4} from 'uuid';
 import * as ko from 'knockout';
+import {defaultMenuOptions, IOpenController, setPopupToCreateDom} from 'popweasel';
 
 const t = makeT('FormView');
 
@@ -42,6 +47,7 @@ export class FormView extends Disposable {
   public viewSection: ViewSectionRec;
   public selectedBox: Computed<BoxModel | null>;
   public selectedColumns: ko.Computed<ViewFieldRec[]>|null;
+  public disableDeleteSection: Computed<boolean>;
 
   protected sortedRows: SortedRowSet;
   protected tableModel: DataTableModel;
@@ -49,17 +55,21 @@ export class FormView extends Disposable {
   protected menuHolder: Holder<any>;
   protected bundle: (clb: () => Promise<void>) => Promise<void>;
 
-  private _autoLayout: Computed<FormLayoutNode>;
+  private _formFields: Computed<ViewFieldRec[]>;
+  private _layoutSpec: SaveableObjObservable<FormLayoutNode>;
+  private _layout: Computed<FormLayoutNode>;
   private _root: BoxModel;
   private _savedLayout: any;
   private _saving: boolean = false;
-  private _url: Computed<string>;
-  private _copyingLink: Observable<boolean>;
+  private _previewUrl: Computed<string>;
   private _pageShare: Computed<ShareRec | null>;
   private _remoteShare: AsyncComputed<{key: string}|null>;
+  private _isFork: Computed<boolean>;
   private _published: Computed<boolean>;
   private _showPublishedMessage: Observable<boolean>;
   private _isOwner: boolean;
+  private _openingForm: Observable<boolean>;
+  private _formEditorBodyElement: HTMLElement;
 
   public create(gristDoc: GristDoc, viewSectionModel: ViewSectionRec) {
     BaseView.call(this as any, gristDoc, viewSectionModel, {'addNewRow': false});
@@ -124,23 +134,32 @@ export class FormView extends Disposable {
     }));
     this.viewSection.selectedFields(this.selectedColumns.peek());
 
-
-    this._autoLayout = Computed.create(this, use => {
-      // If the layout is already there, don't do anything.
-      const existing = use(this.viewSection.layoutSpecObj);
-      if (!existing || !existing.id) {
-        const fields = use(use(this.viewSection.viewFields).getObservable());
-        return this._formTemplate(fields);
-      }
-      return existing;
+    this._formFields = Computed.create(this, use => {
+      const fields = use(use(this.viewSection.viewFields).getObservable());
+      return fields.filter(f => {
+        const column = use(f.column);
+        return (
+          use(column.pureType) !== 'Attachments' &&
+          !(use(column.isRealFormula) && !use(column.colId).startsWith('gristHelper_Transform'))
+        );
+      });
     });
 
-    this._root = this.autoDispose(new LayoutModel(this._autoLayout.get(), null, async (clb?: () => Promise<void>) => {
+    this._layoutSpec = jsonObservable(this.viewSection.layoutSpec, (layoutSpec: FormLayoutNode|null) => {
+      return layoutSpec ?? buildDefaultFormLayout(this._formFields.get());
+    });
+
+    this._layout = Computed.create(this, use => {
+      const fields = use(this._formFields);
+      const layoutSpec = use(this._layoutSpec);
+      const patchedLayout = patchLayoutSpec(layoutSpec, new Set(fields.map(f => f.id())));
+      if (!patchedLayout) { throw new Error('Invalid form layout spec'); }
+
+      return patchedLayout;
+    });
+
+    this._root = this.autoDispose(new LayoutModel(this._layout.get(), null, async (clb?: () => Promise<void>) => {
       await this.bundle(async () => {
-        // If the box is autogenerated we need to save it first.
-        if (!this.viewSection.layoutSpecObj.peek()?.id) {
-          await this.save();
-        }
         if (clb) {
           await clb();
         }
@@ -148,7 +167,7 @@ export class FormView extends Disposable {
       });
     }, this));
 
-    this._autoLayout.addListener((v) => {
+    this._layout.addListener((v) => {
       if (this._saving) {
         console.warn('Layout changed while saving');
         return;
@@ -166,12 +185,7 @@ export class FormView extends Disposable {
       copy: () => {
         const selected = this.selectedBox.get();
         if (!selected) { return; }
-        // Add this box as a json to clipboard.
-        const json = selected.toJSON();
-        navigator.clipboard.writeText(JSON.stringify({
-          ...json,
-          id: uuidv4(),
-        })).catch(reportError);
+        selected.copySelf().catch(reportError);
       },
       cut: () => {
         const selected = this.selectedBox.get();
@@ -179,7 +193,7 @@ export class FormView extends Disposable {
         selected.cutSelf().catch(reportError);
       },
       paste: () => {
-        const doPast = async () => {
+        const doPaste = async () => {
           const boxInClipboard = parseBox(await navigator.clipboard.readText());
           if (!boxInClipboard) { return; }
           if (!this.selectedBox.get()) {
@@ -187,13 +201,14 @@ export class FormView extends Disposable {
           } else {
             this.selectedBox.set(this.selectedBox.get()!.insertBefore(boxInClipboard));
           }
-          // Remove the original box from the clipboard.
-          const cut = this._root.find(boxInClipboard.id);
-          cut?.removeSelf();
+          const maybeCutBox = this._root.find(boxInClipboard.id);
+          if (maybeCutBox?.cut.get()) {
+            maybeCutBox.removeSelf();
+          }
           await this._root.save();
           await navigator.clipboard.writeText('');
         };
-        doPast().catch(reportError);
+        doPaste().catch(reportError);
       },
       nextField: () => {
         const current = this.selectedBox.get();
@@ -242,7 +257,7 @@ export class FormView extends Disposable {
       },
       clearValues: () => {
         const selected = this.selectedBox.get();
-        if (!selected) { return; }
+        if (!selected || selected.canRemove?.() === false) { return; }
         keyboardActions.nextField();
         this.bundle(async () => {
           await selected.deleteSelf();
@@ -267,6 +282,7 @@ export class FormView extends Disposable {
           this.addNewQuestion(selected.placeBeforeMe(), what).catch(reportError);
         } else {
           selected.insertBefore(components.defaultElement(what.structure));
+          this.save().catch(reportError);
         }
       },
       insertField: (what: NewBox) => {
@@ -287,6 +303,7 @@ export class FormView extends Disposable {
           this.addNewQuestion(selected.placeAfterMe(), what).catch(reportError);
         } else {
           selected.insertAfter(components.defaultElement(what.structure));
+          this.save().catch(reportError);
         }
       },
       showColumns: (colIds: string[]) => {
@@ -299,6 +316,7 @@ export class FormView extends Disposable {
             const field = this.viewSection.viewFields().all().find(f => f.getRowId() === fieldRef);
             if (!field) { continue; }
             const box = {
+              id: uuidv4(),
               leaf: fieldRef,
               type: 'Field' as FormLayoutNodeType,
             };
@@ -332,7 +350,7 @@ export class FormView extends Disposable {
       hideFields: keyboardActions.hideFields,
     }, this, this.viewSection.hasFocus));
 
-    this._url = Computed.create(this, use => {
+    this._previewUrl = Computed.create(this, use => {
       const doc = use(this.gristDoc.docPageModel.currentDoc);
       if (!doc) { return ''; }
       const url = urlState().makeUrl({
@@ -343,8 +361,6 @@ export class FormView extends Disposable {
       });
       return url;
     });
-
-    this._copyingLink = Observable.create(this, false);
 
     this._pageShare = Computed.create(this, use => {
       const page = use(use(this.viewSection.view).page);
@@ -366,7 +382,15 @@ export class FormView extends Disposable {
       }
     });
 
+    this._isFork = Computed.create(this, use => {
+      const {docPageModel} = this.gristDoc;
+      return use(docPageModel.isFork) || use(docPageModel.isPrefork);
+    });
+
     this._published = Computed.create(this, use => {
+      const isFork = use(this._isFork);
+      if (isFork) { return false; }
+
       const pageShare = use(this._pageShare);
       const remoteShare = use(this._remoteShare) || use(this._remoteShare.dirty);
       const validShare = pageShare && remoteShare;
@@ -384,6 +408,8 @@ export class FormView extends Disposable {
 
     this._isOwner = isOwner(this.gristDoc.docPageModel.currentDoc.get());
 
+    this._openingForm = Observable.create(this, false);
+
     // Last line, build the dom.
     this.viewPane = this.autoDispose(this.buildDom());
   }
@@ -399,9 +425,9 @@ export class FormView extends Disposable {
   public buildDom() {
     return style.cssFormView(
       testId('editor'),
-      style.cssFormEditBody(
+      this._formEditorBodyElement = style.cssFormEditBody(
         style.cssFormContainer(
-          dom.forEach(this._root.children, (child) => {
+          dom('div', dom.forEach(this._root.children, (child) => {
             if (!child) {
               return dom('div', 'Empty node');
             }
@@ -410,11 +436,12 @@ export class FormView extends Disposable {
               throw new Error('Element is not an HTMLElement');
             }
             return element;
-          }),
-          this._buildPublisher(),
+          })),
         ),
       ),
-      dom.on('click', () => this.selectedBox.set(null))
+      this._buildPublisher(),
+      dom.on('click', () => this.selectedBox.set(null)),
+      dom.maybe(this.gristDoc.docPageModel.isReadonly, () => style.cssFormDisabledOverlay()),
     );
   }
 
@@ -443,6 +470,7 @@ export class FormView extends Disposable {
       }
       // And add it into the layout.
       this.selectedBox.set(insert({
+        id: uuidv4(),
         leaf: fieldRef,
         type: 'Field'
       }));
@@ -457,7 +485,7 @@ export class FormView extends Disposable {
       // If nothing has changed, don't bother.
       if (isEqual(newVersion, this._savedLayout)) { return; }
       this._savedLayout = newVersion;
-      await this.viewSection.layoutSpecObj.setAndSave(newVersion);
+      await this._layoutSpec.setAndSave(newVersion);
     } finally {
       this._saving = false;
     }
@@ -472,7 +500,7 @@ export class FormView extends Disposable {
         async (dontShowAgain) => {
           await this._publishForm();
           if (dontShowAgain) {
-            this.gristDoc.appModel.dismissedPopup('publishForm').set(true);
+            this.gristDoc.appModel.dismissPopup('publishForm', true);
           }
         },
         {
@@ -564,7 +592,7 @@ export class FormView extends Disposable {
         async (dontShowAgain) => {
           await this._unpublishForm();
           if (dontShowAgain) {
-            this.gristDoc.appModel.dismissedPopup('unpublishForm').set(true);
+            this.gristDoc.appModel.dismissPopup('unpublishForm', true);
           }
         },
         {
@@ -612,67 +640,90 @@ export class FormView extends Disposable {
 
   private _buildPublisher() {
     return style.cssSwitcher(
-      this._buildSwitcherMessage(),
+      this._buildNotifications(),
       style.cssButtonGroup(
-        style.cssSmallIconButton(
-          style.cssIconButton.cls('-frameless'),
+        style.cssSmallButton(
+          style.cssSmallButton.cls('-frameless'),
           icon('Revert'),
           testId('reset'),
-          dom('div', 'Reset form'),
+          dom('div', t('Reset form')),
+          dom.style('visibility', use => use(this._published) ? 'hidden' : 'visible'),
           dom.style('margin-right', 'auto'), // move it to the left
           dom.on('click', () => {
-            this._resetForm().catch(reportError);
+            return confirmModal(t('Are you sure you want to reset your form?'),
+              t('Reset'),
+              () => this._resetForm(),
+            );
           })
-        ),
-        style.cssIconLink(
-          testId('preview'),
-          icon('EyeShow'),
-          dom.text('Preview'),
-          dom.prop('href', this._url),
-          dom.prop('target', '_blank'),
-          dom.on('click', async (ev) => {
-            // If this form is not yet saved, we will save it first.
-            if (!this._savedLayout) {
-              stopEvent(ev);
-              await this.save();
-              window.open(this._url.get());
-            }
-          })
-        ),
-        style.cssIconButton(
-          icon('FieldAttachment'),
-          testId('link'),
-          dom('div', 'Copy Link'),
-          dom.prop('disabled', this._copyingLink),
-          dom.show(use => this._isOwner && use(this._published)),
-          dom.on('click', async (_event, element) => {
-            try {
-              this._copyingLink.set(true);
-              const data = typeof ClipboardItem !== 'function' ? await this._getFormLink() : new ClipboardItem({
-                "text/plain": this._getFormLink().then(text => new Blob([text], {type: 'text/plain'})),
-              });
-              await copyToClipboard(data);
-              showTransientTooltip(element, 'Link copied to clipboard', {key: 'copy-form-link'});
-            } catch (ex) {
-              if (ex.code === 'AUTH_NO_OWNER') {
-                throw new Error('Sharing a form is only available to owners');
-              }
-            } finally {
-              this._copyingLink.set(false);
-            }
-          }),
         ),
         dom.domComputed(this._published, published => {
+          if (published) {
+            return style.cssSmallButton(
+              testId('view'),
+              icon('EyeShow'),
+              t('View'),
+              dom.boolAttr('disabled', this._openingForm),
+              dom.on('click', async (ev) => {
+                // If this form is not yet saved, we will save it first.
+                if (!this._savedLayout) {
+                  await this.save();
+                }
+
+                try {
+                  this._openingForm.set(true);
+                  window.open(await this._getFormUrl());
+                } finally {
+                  this._openingForm.set(false);
+                }
+              })
+            );
+          } else {
+            return style.cssSmallLinkButton(
+              testId('preview'),
+              icon('EyeShow'),
+              t('Preview'),
+              dom.attr('href', this._previewUrl),
+              dom.prop('target', '_blank'),
+              dom.on('click', async (ev) => {
+                // If this form is not yet saved, we will save it first.
+                if (!this._savedLayout) {
+                  stopEvent(ev);
+                  await this.save();
+                  window.open(this._previewUrl.get());
+                }
+              })
+            );
+          }
+        }),
+        style.cssSmallButton(
+          icon('Share'),
+          testId('share'),
+          dom('div', t('Share')),
+          dom.show(use => this._isOwner && use(this._published)),
+          elem => {
+            setPopupToCreateDom(elem, ctl => this._buildShareMenu(ctl), {
+              ...defaultMenuOptions,
+              placement: 'top-end',
+            });
+          },
+        ),
+        dom.domComputed(use => {
+          const isFork = use(this._isFork);
+          const published = use(this._published);
           return published
-            ? style.cssIconButton(
-              dom('div', 'Unpublish'),
+            ? style.cssSmallButton(
+              dom('div', t('Unpublish')),
               dom.show(this._isOwner),
-              style.cssIconButton.cls('-warning'),
+              style.cssSmallButton.cls('-warning'),
               dom.on('click', () => this._handleClickUnpublish()),
               testId('unpublish'),
             )
-            : style.cssIconButton(
-              dom('div', 'Publish'),
+            : style.cssSmallButton(
+              dom('div', t('Publish')),
+              dom.boolAttr('disabled', isFork),
+              !isFork ? null : hoverTooltip(t('Save your document to publish this form.'), {
+                placement: 'top',
+              }),
               dom.show(this._isOwner),
               cssButton.cls('-primary'),
               dom.on('click', () => this._handleClickPublish()),
@@ -683,7 +734,7 @@ export class FormView extends Disposable {
     );
   }
 
-  private async _getFormLink() {
+  private async _getFormUrl() {
     const share = this._pageShare.get();
     if (!share) {
       throw new Error('Unable to get form link: form is not published');
@@ -703,7 +754,139 @@ export class FormView extends Disposable {
     });
   }
 
-  private _buildSwitcherMessage() {
+  private _buildShareMenu(ctl: IOpenController) {
+    const formUrl = Observable.create<string | null>(ctl, null);
+    const showEmbedCode = Observable.create(this, false);
+    const embedCode = Computed.create(ctl, formUrl, (_use, url) => {
+      if (!url) { return null; }
+
+      return '<iframe style="border: none; width: 640px; ' +
+        `height: ${this._getEstimatedFormHeightPx()}px" src="${url}"></iframe>`;
+    });
+
+    // Reposition the popup when its height changes.
+    ctl.autoDispose(formUrl.addListener(() => ctl.update()));
+    ctl.autoDispose(showEmbedCode.addListener(() => ctl.update()));
+
+    this._getFormUrl()
+    .then((url) => {
+      if (ctl.isDisposed()) { return; }
+
+      formUrl.set(url);
+    })
+    .catch((e) => {
+      ctl.close();
+      reportError(e);
+    });
+
+    return style.cssShareMenu(
+      dom.cls(menuCssClass),
+        style.cssShareMenuHeader(
+          style.cssShareMenuCloseButton(
+            icon('CrossBig'),
+            dom.on('click', () => ctl.close()),
+          ),
+        ),
+        style.cssShareMenuBody(
+        dom.domComputed(use => {
+          const url = use(formUrl);
+          const code = use(embedCode);
+          if (!url || !code) {
+            return style.cssShareMenuSpinner(loadingSpinner());
+          }
+
+          return [
+            dom('div',
+              style.cssShareMenuSectionHeading(
+                t('Share this form'),
+              ),
+              dom('div',
+                style.cssShareMenuHintText(
+                  t('Anyone with the link below can see the empty form and submit a response.'),
+                ),
+                style.cssShareMenuUrlBlock(
+                  style.cssShareMenuUrl(
+                    {readonly: true, value: url},
+                    dom.on('click', (_ev, el) => { setTimeout(() => el.select(), 0); }),
+                  ),
+                  style.cssShareMenuCopyButton(
+                    testId('link'),
+                    t('Copy link'),
+                    dom.on('click', async (_ev, el) => {
+                      await copyToClipboard(url);
+                      showTransientTooltip(
+                        el,
+                        t('Link copied to clipboard'),
+                        {key: 'share-form-menu'}
+                      );
+                    })
+                  ),
+                ),
+              ),
+            ),
+            dom.domComputed(showEmbedCode, (showCode) => {
+              if (!showCode) {
+                return dom('div',
+                  style.cssShareMenuEmbedFormButton(
+                    t('Embed this form'),
+                    dom.on('click', () => showEmbedCode.set(true)),
+                  )
+                );
+              } else {
+                return dom('div',
+                  style.cssShareMenuSectionHeading(t('Embed this form')),
+                  dom.maybe(showEmbedCode, () => style.cssShareMenuCodeBlock(
+                    style.cssShareMenuCode(
+                      code,
+                      {readonly: true, rows: '3'},
+                      dom.on('click', (_ev, el) => { setTimeout(() => el.select(), 0); }),
+                    ),
+                    style.cssShareMenuCodeBlockButtons(
+                      style.cssShareMenuCopyButton(
+                        testId('code'),
+                        t('Copy code'),
+                        dom.on('click', async (_ev, el) => {
+                          await copyToClipboard(code);
+                          showTransientTooltip(
+                            el,
+                            t('Code copied to clipboard'),
+                            {key: 'share-form-menu'}
+                          );
+                        }),
+                      ),
+                    ),
+                  )),
+                );
+              }
+            }),
+          ];
+        }),
+      ),
+    );
+  }
+
+  private _getSectionCount() {
+    return [...this._root.filter(box => box.type === 'Section')].length;
+  }
+
+  private _getEstimatedFormHeightPx() {
+    return (
+      // Form height.
+      this._formEditorBodyElement.scrollHeight +
+      // Minus "+" button height in each section.
+      (-32 * this._getSectionCount()) +
+      // Plus form footer height (visible only in the preview and published form).
+      64
+    );
+  }
+
+  private _buildNotifications() {
+    return [
+      this._buildFormPublishedNotification(),
+    ];
+  }
+
+  private _buildFormPublishedNotification() {
     return dom.maybe(use => use(this._published) && use(this._showPublishedMessage), () => {
       return style.cssSwitcherMessage(
         style.cssSwitcherMessageBody(
@@ -723,54 +906,15 @@ export class FormView extends Disposable {
     });
   }
 
-  /**
-   * Generates a form template based on the fields in the view section.
-   */
-  private _formTemplate(fields: ViewFieldRec[]) {
-    const boxes: FormLayoutNode[] = fields.map(f => {
-      return {
-        type: 'Field',
-        leaf: f.id()
-      } as FormLayoutNode;
-    });
-    const section = {
-      type: 'Section',
-      children: [
-        {type: 'Paragraph', text: SECTION_TITLE},
-        {type: 'Paragraph', text: SECTION_DESC},
-        ...boxes,
-      ],
-    };
-    return {
-      type: 'Layout',
-      children: [
-        {type: 'Paragraph', text: FORM_TITLE, alignment: 'center', },
-        {type: 'Paragraph', text: FORM_DESC, alignment: 'center', },
-        section,
-        {type: 'Submit'}
-      ]
-    };
-  }
-
   private async _resetForm() {
     this.selectedBox.set(null);
     await this.gristDoc.docData.bundleActions('Reset form', async () => {
       // First we will remove all fields from this section, and add top 9 back.
       const toDelete = this.viewSection.viewFields().all().map(f => f.getRowId());
 
-      const toAdd = this.viewSection.table().columns().peek().filter(c => {
-        // If hidden than no.
-        if (c.isHiddenCol()) { return false; }
-
-        // If formula column, no.
-        if (c.isFormula() && c.formula()) { return false; }
-
-        // Attachments are currently unsupported in forms.
-        if (c.pureType() === 'Attachments') { return false; }
-
-        return true;
-      });
-      toAdd.sort((a, b) => a.parentPos() - b.parentPos());
+      const toAdd = this.viewSection.table().columns().peek()
+        .filter(c => c.isFormCol())
+        .sort((a, b) => a.parentPos() - b.parentPos());
 
       const colRef = toAdd.slice(0, INITIAL_FIELDS_COUNT).map(c => c.id());
       const parentId = colRef.map(() => this.viewSection.id());
@@ -787,9 +931,33 @@ export class FormView extends Disposable {
       ]);
 
       const fields = this.viewSection.viewFields().all().slice(0, 9);
-      await this.viewSection.layoutSpecObj.setAndSave(this._formTemplate(fields));
+      await this._layoutSpec.setAndSave(buildDefaultFormLayout(fields));
     });
   }
+}
+
+/**
+ * Generates a default form layout based on the fields in the view section.
+ */
+export function buildDefaultFormLayout(fields: ViewFieldRec[]): FormLayoutNode {
+  const boxes: FormLayoutNode[] = fields.map(f => {
+    return {
+      id: uuidv4(),
+      type: 'Field',
+      leaf: f.id(),
+    };
+  });
+  const section = components.Section(...boxes);
+  return {
+    id: uuidv4(),
+    type: 'Layout',
+    children: [
+      {id: uuidv4(), type: 'Paragraph', text: FORM_TITLE, alignment: 'center', },
+      {id: uuidv4(), type: 'Paragraph', text: FORM_DESC, alignment: 'center', },
+      section,
+      {id: uuidv4(), type: 'Submit'},
+    ],
+  };
 }
 
 // Getting an ES6 class to work with old-style multiple base classes takes a little hacking. Credits: ./ChartView.ts
@@ -797,8 +965,5 @@ defaults(FormView.prototype, BaseView.prototype);
 Object.assign(FormView.prototype, BackboneEvents);
 
 // Default values when form is reset.
-const FORM_TITLE = "## **Form Title**";
-const FORM_DESC = "Your form description goes here.";
-
-const SECTION_TITLE = '### **Header**';
-const SECTION_DESC = 'Description';
+const FORM_TITLE = t("## **Form Title**");
+const FORM_DESC = t("Your form description goes here.");

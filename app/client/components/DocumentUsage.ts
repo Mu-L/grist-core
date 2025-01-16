@@ -7,7 +7,7 @@ import {withInfoTooltip} from 'app/client/ui/tooltips';
 import {mediaXSmall, theme} from 'app/client/ui2018/cssVars';
 import {icon} from 'app/client/ui2018/icons';
 import {loadingDots, loadingSpinner} from 'app/client/ui2018/loaders';
-import {APPROACHING_LIMIT_RATIO, DataLimitStatus} from 'app/common/DocUsage';
+import {APPROACHING_LIMIT_RATIO, DataLimitInfo} from 'app/common/DocUsage';
 import {Features, isFreePlan} from 'app/common/Features';
 import {capitalizeFirstWord} from 'app/common/gutil';
 import {canUpgradeOrg} from 'app/common/roles';
@@ -35,12 +35,13 @@ export class DocumentUsage extends Disposable {
   private readonly _currentDocUsage = this._docPageModel.currentDocUsage;
   private readonly _currentOrg = this._docPageModel.currentOrg;
   private readonly _currentProduct = this._docPageModel.currentProduct;
+  private readonly _currentFeatures = this._docPageModel.currentFeatures;
 
   // TODO: Update this whenever the rest of the UI is internationalized.
   private readonly _rowCountFormatter = new Intl.NumberFormat('en-US');
 
-  private readonly _dataLimitStatus = Computed.create(this, this._currentDocUsage, (_use, usage) => {
-    return usage?.dataLimitStatus ?? null;
+  private readonly _dataLimitInfo = Computed.create(this, this._currentDocUsage, (_use, usage) => {
+    return usage?.dataLimitInfo;
   });
 
   private readonly _rowCount = Computed.create(this, this._currentDocUsage, (_use, usage) => {
@@ -56,8 +57,8 @@ export class DocumentUsage extends Disposable {
   });
 
   private readonly _rowMetricOptions: Computed<MetricOptions> =
-    Computed.create(this, this._currentProduct, this._rowCount, (_use, product, rowCount) => {
-      const maxRows = product?.features.baseMaxRowsPerDocument;
+    Computed.create(this, this._currentFeatures, this._rowCount, (_use, features, rowCount) => {
+      const maxRows = features?.baseMaxRowsPerDocument;
       // Invalid row limits are currently treated as if they are undefined.
       const maxValue = maxRows && maxRows > 0 ? maxRows : undefined;
       return {
@@ -71,8 +72,8 @@ export class DocumentUsage extends Disposable {
     });
 
   private readonly _dataSizeMetricOptions: Computed<MetricOptions> =
-    Computed.create(this, this._currentProduct, this._dataSizeBytes, (_use, product, dataSize) => {
-      const maxSize = product?.features.baseMaxDataSizePerDocument;
+    Computed.create(this, this._currentFeatures, this._dataSizeBytes, (_use, features, dataSize) => {
+      const maxSize = features?.baseMaxDataSizePerDocument;
       // Invalid data size limits are currently treated as if they are undefined.
       const maxValue = maxSize && maxSize > 0 ? maxSize : undefined;
       return {
@@ -93,8 +94,8 @@ export class DocumentUsage extends Disposable {
     });
 
   private readonly _attachmentsSizeMetricOptions: Computed<MetricOptions> =
-    Computed.create(this, this._currentProduct, this._attachmentsSizeBytes, (_use, product, attachmentsSize) => {
-      const maxSize = product?.features.baseMaxAttachmentsBytesPerDocument;
+    Computed.create(this, this._currentFeatures, this._attachmentsSizeBytes, (_use, features, attachmentsSize) => {
+      const maxSize = features?.baseMaxAttachmentsBytesPerDocument;
       // Invalid attachments size limits are currently treated as if they are undefined.
       const maxValue = maxSize && maxSize > 0 ? maxSize : undefined;
       return {
@@ -156,11 +157,12 @@ export class DocumentUsage extends Disposable {
 
       const org = use(this._currentOrg);
       const product = use(this._currentProduct);
-      const status = use(this._dataLimitStatus);
-      if (!org || !status) { return null; }
+      const features = use(this._currentFeatures);
+      const usageInfo = use(this._dataLimitInfo);
+      if (!org || !usageInfo?.status) { return null; }
 
       return buildMessage([
-        buildLimitStatusMessage(status, product?.features, {
+        buildLimitStatusMessage(usageInfo, features, {
           disableRawDataLink: true
         }),
         (product && isFreePlan(product.name)
@@ -194,13 +196,14 @@ export class DocumentUsage extends Disposable {
 }
 
 export function buildLimitStatusMessage(
-  status: NonNullable<DataLimitStatus>,
-  features?: Features,
+  usageInfo: NonNullable<DataLimitInfo>,
+  features?: Features|null,
   options: {
     disableRawDataLink?: boolean;
   } = {}
 ) {
   const {disableRawDataLink = false} = options;
+  const {status, daysRemaining} = usageInfo;
   switch (status) {
     case 'approachingLimit': {
       return [
@@ -222,7 +225,7 @@ export function buildLimitStatusMessage(
       return [
         'Document limits ',
         disableRawDataLink ? 'exceeded' : buildRawDataPageLink('exceeded'),
-        `. In ${gracePeriodDays} days, this document will be read-only.`
+        `. In ${daysRemaining} days, this document will be read-only.`
       ];
     }
     case 'deleteOnly': {

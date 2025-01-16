@@ -1,13 +1,23 @@
 import {ErrorOrValue, freezeError, mapGetOrSet, MapWithTTL} from 'app/common/AsyncCreate';
 import {ObjMetadata, ObjSnapshot, ObjSnapshotWithMetadata} from 'app/common/DocSnapshot';
 import {SCHEMA_VERSION} from 'app/common/schema';
-import {DocWorkerMap} from 'app/gen-server/lib/DocWorkerMap';
-import {HomeDBManager} from 'app/gen-server/lib/HomeDBManager';
+import {DocWorkerMap, getDocWorkerMap} from 'app/gen-server/lib/DocWorkerMap';
+import {HomeDBManager} from 'app/gen-server/lib/homedb/HomeDBManager';
 import {ActiveDoc} from 'app/server/lib/ActiveDoc';
+import {
+  AttachmentStoreProvider,
+  IAttachmentStoreProvider
+} from 'app/server/lib/AttachmentStoreProvider';
 import {create} from 'app/server/lib/create';
 import {DocManager} from 'app/server/lib/DocManager';
 import {makeExceptionalDocSession} from 'app/server/lib/DocSession';
-import {DELETED_TOKEN, ExternalStorage, wrapWithKeyMappedStorage} from 'app/server/lib/ExternalStorage';
+import {IDocWorkerMap} from 'app/server/lib/DocWorkerMap';
+import {
+  DELETED_TOKEN,
+  ExternalStorage, ExternalStorageCreator,
+  ExternalStorageSettings,
+  wrapWithKeyMappedStorage
+} from 'app/server/lib/ExternalStorage';
 import {createDummyGristServer} from 'app/server/lib/GristServer';
 import {
   BackupEvent,
@@ -27,7 +37,7 @@ import {createInitialDb, removeConnection, setUpDB} from 'test/gen-server/seed';
 import {createTmpDir, getGlobalPluginManager} from 'test/server/docTools';
 import {EnvironmentSnapshot, setTmpLogLevel, useFixtureDoc} from 'test/server/testUtils';
 import {waitForIt} from 'test/server/wait';
-import uuidv4 from "uuid/v4";
+import {v4 as uuidv4} from 'uuid';
 
 bluebird.promisifyAll(RedisClient.prototype);
 
@@ -269,8 +279,9 @@ class TestStore {
   public constructor(
     private _localDirectory: string,
     private _workerId: string,
-    private _workers: DocWorkerMap,
-    private _externalStorageCreate: (purpose: 'doc'|'meta', extraPrefix: string) => ExternalStorage|undefined) {
+    private _workers: IDocWorkerMap,
+    private _externalStorageCreate: ExternalStorageCreator,
+    private _attachmentStoreProvider?: IAttachmentStoreProvider) {
   }
 
   public async run<T>(fn: () => Promise<T>): Promise<T> {
@@ -296,22 +307,26 @@ class TestStore {
       secondsBeforeFirstRetry: 3,   // rumors online suggest delays of 10-11 secs
                                     // are not super-unusual.
       pushDocUpdateTimes: false,
-      externalStorageCreator: (purpose) => {
+
+    };
+    const externalStorageCreator = (purpose: ExternalStorageSettings["purpose"]) => {
         const result = this._externalStorageCreate(purpose, this._extraPrefix);
         if (!result) { throw new Error('no storage'); }
         return result;
-      }
     };
+
+    const attachmentStoreProvider = this._attachmentStoreProvider ?? new AttachmentStoreProvider([], "TESTINSTALL");
+
     const storageManager = new HostedStorageManager(this._localDirectory,
                                                     this._workerId,
                                                     false,
                                                     this._workers,
                                                     dbManager,
-                                                    create,
+                                                    externalStorageCreator,
                                                     options);
     this.storageManager = storageManager;
-    this.docManager = new DocManager(storageManager, await getGlobalPluginManager(),
-                                     dbManager, {
+    this.docManager = new DocManager(storageManager, await getGlobalPluginManager(), dbManager, attachmentStoreProvider,
+                                     {
                                        ...createDummyGristServer(),
                                        getStorageManager() { return storageManager; },
                                      });
@@ -494,18 +509,12 @@ describe('HostedStorageManager', function() {
         await setRedisChecksum(docId, 'nobble');
         await store.removeAll();
 
-        // With GRIST_SKIP_REDIS_CHECKSUM_MISMATCH set, the fetch should work
-        process.env.GRIST_SKIP_REDIS_CHECKSUM_MISMATCH = 'true';
+        const warnSpy = sandbox.spy(log, 'warn');
         await store.run(async () => {
           await assert.isFulfilled(store.docManager.fetchDoc(docSession, docId));
+          assert.isTrue(warnSpy.calledWithMatch('has wrong checksum'), 'a warning should have been logged');
         });
-
-        // By default, the fetch should eventually errors.
-        delete process.env.GRIST_SKIP_REDIS_CHECKSUM_MISMATCH;
-        await store.run(async () => {
-          await assert.isRejected(store.docManager.fetchDoc(docSession, docId),
-                                  /operation failed to become consistent/);
-        });
+        warnSpy.restore();
 
         // Check we get the document back on fresh start if checksum is correct.
         await setRedisChecksum(docId, checksum);
@@ -961,6 +970,98 @@ describe('HostedStorageManager', function() {
       });
     });
   }
+
+  describe('minio-without-redis', async () => {
+    const workerId = 'dw17';
+    let tmpDir: string;
+    let oldEnv: EnvironmentSnapshot;
+    let docWorkerMap: IDocWorkerMap;
+    let externalStorageCreate: ExternalStorageCreator;
+    let defaultParams: ConstructorParameters<typeof HostedStorageManager>;
+
+    before(async function() {
+      tmpDir = await createTmpDir();
+      oldEnv = new EnvironmentSnapshot();
+      // Disable Redis
+      delete process.env.REDIS_URL;
+
+      const storage = create?.getStorageOptions?.('minio');
+      const creator = storage?.create;
+      if (!creator || !storage?.check()) {
+        return this.skip();
+      }
+      externalStorageCreate = creator;
+    });
+
+    after(async () => {
+      oldEnv.restore();
+    });
+
+    beforeEach(async function() {
+      // With Redis disabled, this should be the non-redis version of IDocWorkerMap (DummyDocWorkerMap)
+      docWorkerMap = getDocWorkerMap();
+      await docWorkerMap.addWorker({
+        id: workerId,
+        publicUrl: "none",
+        internalUrl: "none",
+      });
+      await docWorkerMap.setWorkerAvailability(workerId, true);
+
+      defaultParams = [
+        tmpDir,
+        workerId,
+        false,
+        docWorkerMap,
+        {
+          setDocsMetadata: async (metadata) => {},
+          getDocFeatures: async (docId) => undefined,
+        },
+        externalStorageCreate,
+      ];
+    });
+
+    it("doesn't wipe local docs when they exist on disk but not remote storage", async function() {
+      const storageManager = new HostedStorageManager(...defaultParams);
+
+      const docId = "NewDoc";
+
+      const path = storageManager.getPath(docId);
+      // Simulate an uploaded .grist file.
+      await fse.writeFile(path, "");
+
+      await storageManager.prepareLocalDoc(docId);
+
+      assert.isTrue(await fse.pathExists(path));
+    });
+
+    it("fetches remote docs if they don't exist locally", async function() {
+      const testStore = new TestStore(
+        tmpDir,
+        workerId,
+        docWorkerMap,
+        externalStorageCreate
+      );
+
+      let docName: string = "";
+      let docPath: string = "";
+
+      await testStore.run(async () => {
+        const newDoc = await testStore.docManager.createNewEmptyDoc(docSession, "NewRemoteDoc");
+        docName = newDoc.docName;
+        docPath = testStore.storageManager.getPath(docName);
+      });
+
+      // This should be safe since testStore.run closes everything down.
+      await fse.remove(docPath);
+      assert.isFalse(await fse.pathExists(docPath));
+
+      await testStore.run(async () => {
+        await testStore.docManager.fetchDoc(docSession, docName);
+      });
+
+      assert.isTrue(await fse.pathExists(docPath));
+    });
+  });
 });
 
 // This is a performance test, to check if the backup settings are plausible.

@@ -55,6 +55,8 @@ const {NEW_FILTER_JSON} = require('app/client/models/ColumnFilter');
 const {CombinedStyle} = require("app/client/models/Styles");
 const {buildRenameColumn} = require('app/client/ui/ColumnTitle');
 const {makeT} = require('app/client/lib/localization');
+const {isList} = require('app/common/gristTypes');
+
 
 const t = makeT('GridView');
 
@@ -68,8 +70,9 @@ const SHORT_CLICK_IN_MS = 500;
 
 // size of the plus width ()
 const PLUS_WIDTH = 40;
-// size of the row number field (we assume 4rem)
+// size of the row number field (we assume 4rem, 1rem = 13px in grist)
 const ROW_NUMBER_WIDTH = 52;
+
 
 /**
  * GridView component implements the view of a grid of cells.
@@ -78,6 +81,7 @@ function GridView(gristDoc, viewSectionModel, isPreview = false) {
   BaseView.call(this, gristDoc, viewSectionModel, { isPreview, 'addNewRow': true });
 
   this.viewSection = viewSectionModel;
+  this.isReadonly = this.gristDoc.isReadonly.get() || this.viewSection.isVirtual();
 
   //--------------------------------------------------
   // Observables local to this view
@@ -94,8 +98,7 @@ function GridView(gristDoc, viewSectionModel, isPreview = false) {
 
   this.cellSelector = selector.CellSelector.create(this, this);
 
-  if (!isPreview) {
-    // Disable summaries in import previews, for now.
+  if (!isPreview && !this.gristDoc.comparison) {
     this.selectionSummary = SelectionSummary.create(this,
       this.cellSelector, this.tableModel.tableData, this.sortedRows, this.viewSection.viewFields);
   }
@@ -345,6 +348,7 @@ GridView.gridCommands = {
       this.insertColumn(null, {index: this.cursor.fieldIndex() + 1});
     }
   },
+  makeHeadersFromRow: function() { this.makeHeadersFromRow(this.getSelection()); },
   renameField: function() { this.renameColumn(this.cursor.fieldIndex()); },
   hideFields: function() { this.hideFields(this.getSelection()); },
   deleteFields: function() {
@@ -388,7 +392,7 @@ GridView.gridCommands = {
     if (!action) { return; }
     // if grist document is in readonly - simply change the value
     // without saving
-    if (this.gristDoc.isReadonly.get()) {
+    if (this.isReadonly) {
       this.viewSection.rawNumFrozen(action.numFrozen);
       return;
     }
@@ -625,27 +629,25 @@ GridView.prototype.paste = async function(data, cutCallback) {
 
   if (actions.length > 0) {
     let cursorPos = this.cursor.getCursorPos();
-    return this.sendPasteActions(cutCallback, actions)
-    .then(results => {
-      // If rows were added, get their rowIds from the action results.
-      let addRowIds = (actions[0][0] === 'BulkAddRecord' ? results[0] : []);
-      console.assert(addRowIds.length <= updateRowIds.length,
-        `Unexpected number of added rows: ${addRowIds.length} of ${updateRowIds.length}`);
-      let newRowIds = updateRowIds.slice(0, updateRowIds.length - addRowIds.length)
-        .concat(addRowIds);
+    const results = await this.sendPasteActions(cutCallback, actions);
+    // If rows were added, get their rowIds from the action results.
+    let addRowIds = (actions[0][0] === 'BulkAddRecord' ? results[0] : []);
+    console.assert(addRowIds.length <= updateRowIds.length,
+      `Unexpected number of added rows: ${addRowIds.length} of ${updateRowIds.length}`);
+    let newRowIds = updateRowIds.slice(0, updateRowIds.length - addRowIds.length)
+      .concat(addRowIds);
 
-      // Restore the cursor to the right rowId, even if it jumped.
-      this.cursor.setCursorPos({rowId: cursorPos.rowId === 'new' ? addRowIds[0] : cursorPos.rowId});
+    // Restore the cursor to the right rowId, even if it jumped.
+    this.cursor.setCursorPos({rowId: cursorPos.rowId === 'new' ? addRowIds[0] : cursorPos.rowId});
 
-      // Restore the selection if it would select the correct rows.
-      let topRowIndex = this.viewData.getRowIndex(newRowIds[0]);
-      if (newRowIds.every((r, i) => r === this.viewData.getRowId(topRowIndex + i))) {
-        this.cellSelector.selectArea(topRowIndex, leftIndex,
-          topRowIndex + outputHeight - 1, leftIndex + outputWidth - 1);
-      }
+    // Restore the selection if it would select the correct rows.
+    let topRowIndex = this.viewData.getRowIndex(newRowIds[0]);
+    if (newRowIds.every((r, i) => r === this.viewData.getRowId(topRowIndex + i))) {
+      this.cellSelector.selectArea(topRowIndex, leftIndex,
+        topRowIndex + outputHeight - 1, leftIndex + outputWidth - 1);
+    }
 
-      commands.allCommands.clearCopySelection.run();
-    });
+    await commands.allCommands.clearCopySelection.run();
   }
 };
 
@@ -902,6 +904,38 @@ GridView.prototype.insertColumn = async function(colId = null, options = {}) {
   return newColInfo;
 };
 
+GridView.prototype.makeHeadersFromRow = async function(selection) {
+  if (this._getCellContextMenuOptions().disableMakeHeadersFromRow){
+    return;
+  }
+  const record = this.tableModel.tableData.getRecord(selection.rowIds[0]);
+  const actions = this.viewSection.viewFields().peek().reduce((acc, field) => {
+    const col = field.column();
+    const colId = col.colId.peek();
+    let formatter = field.formatter();
+    let newColLabel = record[colId];
+    // Manage column that are references
+    if (col.refTable()) {
+      const refTableDisplayCol = this.gristDoc.docModel.columns.getRowModel(col.displayCol());
+      newColLabel =  record[refTableDisplayCol.colId()];
+      formatter = field.visibleColFormatter();
+    }
+    // Manage column that are lists
+    if (isList(newColLabel)) {
+      newColLabel = newColLabel[1];
+    }
+    if (typeof newColLabel === 'string') {
+      newColLabel = newColLabel.trim();
+    }
+    // Check value is not empty but accept 0 and false as valid values
+    if (newColLabel !== null && newColLabel !== undefined && newColLabel !== "") {
+      return [...acc, ['ModifyColumn', colId, {"label": formatter.formatAny(newColLabel)}]];
+    }
+    return acc
+  }, []);
+  this.tableModel.sendTableActions(actions, "Use as table headers");
+};
+
 GridView.prototype.renameColumn = function(index) {
   this.currentEditingColumnIndex(index);
 };
@@ -1023,11 +1057,14 @@ GridView.prototype.getMousePosRow = function (yCoord) {
 
 /**
  *  Returns the row index of the row whose top offset is closest to and
- *  no greater than given y-position excluding addRows.
+ *  no greater than given y-position.
  *  param{yCoord}: The mouse y-position on the screen.
  **/
 GridView.prototype.currentMouseRow = function(yCoord) {
-  return Math.min(this.getMousePosRow(this.scrollTop() + yCoord), Math.max(0, this.getLastDataRowIndex()));
+  return Math.min(
+    this.getMousePosRow(this.scrollTop() + yCoord),
+    Math.max(0, this.getLastDataRowIndex() + 1)
+  );
 };
 
 /**
@@ -1233,12 +1270,12 @@ GridView.prototype.buildDom = function() {
             kd.style('minWidth', '100%'),
             kd.style('borderLeftWidth', v.borderWidthPx),
             kd.foreach(v.viewFields(), field => {
+              const canRename = ko.pureComputed(() => !field.column().disableEditData());
               const isEditingLabel = koUtil.withKoUtils(ko.pureComputed({
                 read: () => {
                   const goodIndex = () => editIndex() === field._index();
-                  const isReadonly = () => this.gristDoc.isReadonlyKo() || self.isPreview;
-                  const isSummary = () => Boolean(field.column().disableEditData());
-                  return goodIndex() && !isReadonly() && !isSummary();
+                  const isReadonly = () => this.isReadonly || self.isPreview;
+                  return goodIndex() && !isReadonly();
                 },
                 write: val => {
                   if (val) {
@@ -1269,6 +1306,7 @@ GridView.prototype.buildDom = function() {
 
               return dom(
                 'div.column_name.field',
+                dom.autoDispose(canRename),
                 dom.autoDispose(headerTextColor),
                 dom.autoDispose(headerFillColor),
                 dom.autoDispose(headerFontBold),
@@ -1301,7 +1339,7 @@ GridView.prototype.buildDom = function() {
                 },
                 kd.style('width', field.widthPx),
                 kd.style('borderRightWidth', v.borderWidthPx),
-                viewCommon.makeResizable(field.width, {shouldSave: !this.gristDoc.isReadonly.get()}),
+                viewCommon.makeResizable(field.width, {shouldSave: !this.isReadonly}),
                 kd.toggleClass('selected', () => ko.unwrap(this.isColSelected.at(field._index()))),
                 dom.on('contextmenu', ev => {
                   // This is a little hack to position the menu the same way as with a click
@@ -1318,7 +1356,8 @@ GridView.prototype.buildDom = function() {
                   buildRenameColumn({
                     field,
                     isEditing: isEditingLabel,
-                    optCommands: renameCommands
+                    optCommands: renameCommands,
+                    canRename,
                   }),
                 ),
                 self._showTooltipOnHover(field, isTooltip),
@@ -1348,7 +1387,7 @@ GridView.prototype.buildDom = function() {
                 this._buildInsertColumnMenu({field}),
               );
             }),
-            this.isPreview ? null : kd.maybe(() => !this.gristDoc.isReadonlyKo(), () => (
+            this.isPreview ? null : kd.maybe(() => !this.isReadonly, () => (
               this._modField = dom('div.column_name.mod-add-column.field',
                 '+',
                 kd.style("width", PLUS_WIDTH + 'px'),
@@ -1466,8 +1505,7 @@ GridView.prototype.buildDom = function() {
           dom.on('mousedown', () => false),
           testId('row-menu-trigger'),
         ),
-        kd.toggleClass('selected', () =>
-          !row._isAddRow() && self.cellSelector.isRowSelected(row._index())),
+        kd.toggleClass('selected', () => self.cellSelector.isRowSelected(row._index())),
       ),
       dom('div.record',
         kd.toggleClass('record-add', row._isAddRow),
@@ -1522,8 +1560,7 @@ GridView.prototype.buildDom = function() {
           });
           var fieldBuilder = self.fieldBuilders.at(field._index());
           var isSelected = ko.computed(() => {
-            return !row._isAddRow() &&
-              !self.cellSelector.isCurrentSelectType(selector.NONE) &&
+            return !self.cellSelector.isCurrentSelectType(selector.NONE) &&
               ko.unwrap(self.isColSelected.at(field._index())) &&
               self.cellSelector.isRowSelected(row._index());
           });
@@ -1899,7 +1936,7 @@ GridView.prototype._getColumnMenuOptions = function(copySelection) {
     numColumns: copySelection.fields.length,
     numFrozen: this.viewSection.numFrozen.peek(),
     disableModify: calcFieldsCondition(copySelection.fields, f => f.disableModify.peek()),
-    isReadonly: this.gristDoc.isReadonly.get() || this.isPreview,
+    isReadonly: this.isReadonly || this.isPreview,
     isRaw: this.viewSection.isRaw(),
     isFiltered: this.isFiltered(),
     isFormula: calcFieldsCondition(copySelection.fields, f => f.column.peek().isRealFormula.peek()),
@@ -1965,14 +2002,20 @@ GridView.prototype.cellContextMenu = function() {
 GridView.prototype._getCellContextMenuOptions = function() {
   return {
     disableInsert: Boolean(
-      this.gristDoc.isReadonly.get() ||
+      this.isReadonly ||
       this.viewSection.disableAddRemoveRows() ||
       this.tableModel.tableMetaRow.onDemand()
     ),
     disableDelete: Boolean(
-      this.gristDoc.isReadonly.get() ||
+      this.isReadonly ||
       this.viewSection.disableAddRemoveRows() ||
       this.getSelection().onlyAddRowSelected()
+    ),
+    disableMakeHeadersFromRow: Boolean(
+      this.isReadonly ||
+      this.getSelection().rowIds.length !== 1 ||
+      this.getSelection().onlyAddRowSelected() ||
+      this.viewSection.table().summarySourceTable() !== 0
     ),
     isViewSorted: this.viewSection.activeSortSpec.peek().length > 0,
     numRows: this.getSelection().rowIds.length,

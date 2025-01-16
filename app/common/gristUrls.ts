@@ -14,7 +14,7 @@ import clone = require('lodash/clone');
 import pickBy = require('lodash/pickBy');
 import slugify from 'slugify';
 
-export const SpecialDocPage = StringUnion('code', 'acl', 'data', 'GristDocTour', 'settings', 'webhook');
+export const SpecialDocPage = StringUnion('code', 'acl', 'data', 'GristDocTour', 'settings', 'webhook', 'timing');
 type SpecialDocPage = typeof SpecialDocPage.type;
 export type IDocPage = number | SpecialDocPage;
 
@@ -41,11 +41,14 @@ export type AccountPage = typeof AccountPage.type;
 export const ActivationPage = StringUnion('activation');
 export type ActivationPage = typeof ActivationPage.type;
 
+export const AuditLogsPage = StringUnion('audit-logs');
+export type AuditLogsPage = typeof AuditLogsPage.type;
+
 export const LoginPage = StringUnion('signup', 'login', 'verified', 'forgot-password');
 export type LoginPage = typeof LoginPage.type;
 
-export const SupportGristPage = StringUnion('support');
-export type SupportGristPage = typeof SupportGristPage.type;
+export const AdminPanelPage = StringUnion('admin');
+export type AdminPanelPage = typeof AdminPanelPage.type;
 
 // Overall UI style.  "full" is normal, "singlePage" is a single page focused, panels hidden experience.
 export const InterfaceStyle = StringUnion('singlePage', 'full');
@@ -83,28 +86,38 @@ export const commonUrls = {
   helpTriggerFormulas: "https://support.getgrist.com/formulas/#trigger-formulas",
   helpTryingOutChanges: "https://support.getgrist.com/copying-docs/#trying-out-changes",
   helpCustomWidgets: "https://support.getgrist.com/widget-custom",
+  helpInstallAuditLogs: "https://support.getgrist.com/install/audit-logs",
+  helpTeamAuditLogs: "https://support.getgrist.com/teams/audit-logs",
   helpTelemetryLimited: "https://support.getgrist.com/telemetry-limited",
+  helpEnterpriseOptIn: "https://support.getgrist.com/self-managed/#how-do-i-activate-grist-enterprise",
   helpCalendarWidget: "https://support.getgrist.com/widget-calendar",
   helpLinkKeys: "https://support.getgrist.com/examples/2021-04-link-keys",
+  helpFilteringReferenceChoices: "https://support.getgrist.com/col-refs/#filtering-reference-choices-in-dropdown",
+  helpSandboxing: "https://support.getgrist.com/self-managed/#how-do-i-sandbox-documents",
+  helpAPI: 'https://support.getgrist.com/api',
   freeCoachingCall: getFreeCoachingCallUrl(),
   contactSupport: getContactSupportUrl(),
+  termsOfService: getTermsOfServiceUrl(),
   plans: "https://www.getgrist.com/pricing",
-  sproutsProgram: "https://www.getgrist.com/sprouts-program",
   contact: "https://www.getgrist.com/contact",
   templates: 'https://www.getgrist.com/templates',
+  webinars: getWebinarsUrl(),
   community: 'https://community.getgrist.com',
   functions: 'https://support.getgrist.com/functions',
   formulaSheet: 'https://support.getgrist.com/formula-cheat-sheet',
   formulas: 'https://support.getgrist.com/formulas',
   forms: 'https://www.getgrist.com/forms/?utm_source=grist-forms&utm_medium=grist-forms&utm_campaign=forms-footer',
+  openGraphPreviewImage: 'https://grist-static.com/icons/opengraph-preview-image.png',
 
-  basicTutorial: 'https://templates.getgrist.com/woXtXUBmiN5T/Grist-Basics',
-  basicTutorialImage: 'https://www.getgrist.com/wp-content/uploads/2021/08/lightweight-crm.png',
   gristLabsCustomWidgets: 'https://gristlabs.github.io/grist-widget/',
   gristLabsWidgetRepository: 'https://github.com/gristlabs/grist-widget/releases/download/latest/manifest.json',
   githubGristCore: 'https://github.com/gristlabs/grist-core',
   githubSponsorGristLabs: 'https://github.com/sponsors/gristlabs',
+
+  versionCheck: 'https://api.getgrist.com/api/version',
 };
+
+export const ONBOARDING_VIDEO_YOUTUBE_EMBED_ID = '56AieR9rpww';
 
 /**
  * Values representable in a URL. The current state is available as urlState().state observable
@@ -122,15 +135,17 @@ export interface IGristUrlState {
   account?: AccountPage;
   billing?: BillingPage;
   activation?: ActivationPage;
+  auditLogs?: AuditLogsPage;
   login?: LoginPage;
   welcome?: WelcomePage;
-  supportGrist?: SupportGristPage;
+  adminPanel?: AdminPanelPage;
   welcomeTour?: boolean;
   docTour?: boolean;
   manageUsers?: boolean;
   createTeam?: boolean;
+  upgradeTeam?: boolean;
   params?: {
-    billingPlan?: string;
+    billingPlan?: string; // priceId
     planType?: string;
     billingTask?: BillingTask;
     embed?: boolean;
@@ -181,10 +196,23 @@ export interface OrgUrlInfo {
   orgInPath?: string;     // If /o/{orgInPath} should be used to access the requested org.
 }
 
-function isDocInternalUrl(host: string) {
-  if (!process.env.APP_DOC_INTERNAL_URL) { return false; }
-  const internalUrl = new URL('/', process.env.APP_DOC_INTERNAL_URL);
-  return internalUrl.host === host;
+function hostMatchesUrl(host?: string, url?: string) {
+  return host !== undefined && url !== undefined && new URL(url).host === host;
+}
+
+/**
+ * Returns true if:
+ *  - the server is a home worker and the host matches APP_HOME_INTERNAL_URL;
+ *  - or the server is a doc worker and the host matches APP_DOC_INTERNAL_URL;
+ *
+ * @param {string?} host The host to check
+ */
+function isOwnInternalUrlHost(host?: string) {
+  // Note: APP_HOME_INTERNAL_URL may also be defined in doc worker as well as in home worker
+  if (process.env.APP_HOME_INTERNAL_URL && hostMatchesUrl(host, process.env.APP_HOME_INTERNAL_URL)) {
+    return true;
+  }
+  return Boolean(process.env.APP_DOC_INTERNAL_URL) && hostMatchesUrl(host, process.env.APP_DOC_INTERNAL_URL);
 }
 
 /**
@@ -204,7 +232,11 @@ export function getHostType(host: string, options: {
 
   const hostname = host.split(":")[0];
   if (!options.baseDomain) { return 'native'; }
-  if (hostname === 'localhost' || isDocInternalUrl(host) || hostname.endsWith(options.baseDomain)) {
+  if (
+    hostname === 'localhost' ||
+    isOwnInternalUrlHost(host) ||
+    hostname.endsWith(options.baseDomain)
+  ) {
     return 'native';
   }
   return 'custom';
@@ -303,13 +335,15 @@ export function encodeUrl(gristConfig: Partial<GristLoadConfig>,
 
   if (state.activation) { parts.push(state.activation); }
 
+  if (state.auditLogs) { parts.push(state.auditLogs); }
+
   if (state.login) { parts.push(state.login); }
 
   if (state.welcome) {
     parts.push(`welcome/${state.welcome}`);
   }
 
-  if (state.supportGrist) { parts.push(state.supportGrist); }
+  if (state.adminPanel) { parts.push(state.adminPanel); }
 
   const queryParams = pickBy(state.params, (v, k) => k !== 'linkParameters') as {[key: string]: string};
   for (const [k, v] of Object.entries(state.params?.linkParameters || {})) {
@@ -353,6 +387,8 @@ export function encodeUrl(gristConfig: Partial<GristLoadConfig>,
     url.hash = 'manage-users';
   } else if (state.createTeam) {
     url.hash = 'create-team';
+  } else if (state.upgradeTeam) {
+    url.hash = 'upgrade-team';
   } else {
     url.hash = '';
   }
@@ -415,7 +451,7 @@ export function decodeUrl(gristConfig: Partial<GristLoadConfig>, location: Locat
   // the minimum length of a urlId prefix is longer than the maximum length
   // of any of the valid keys in the url.
   for (const key of map.keys()) {
-    if (key.length >= MIN_URLID_PREFIX_LENGTH && !LoginPage.guard(key) && !SupportGristPage.guard(key)) {
+    if (key.length >= MIN_URLID_PREFIX_LENGTH && !LoginPage.guard(key)) {
       map.set('doc', key);
       map.set('slug', map.get(key)!);
       map.delete(key);
@@ -452,10 +488,11 @@ export function decodeUrl(gristConfig: Partial<GristLoadConfig>, location: Locat
   if (map.has('activation')) {
     state.activation = ActivationPage.parse(map.get('activation')) || 'activation';
   }
-  if (map.has('welcome')) { state.welcome = WelcomePage.parse(map.get('welcome')); }
-  if (map.has('support')) {
-    state.supportGrist = SupportGristPage.parse(map.get('support')) || 'support';
+  if (map.has('audit-logs')) {
+    state.auditLogs = AuditLogsPage.parse(map.get('audit-logs')) || 'audit-logs';
   }
+  if (map.has('welcome')) { state.welcome = WelcomePage.parse(map.get('welcome')); }
+  if (map.has('admin')) { state.adminPanel = AdminPanelPage.parse(map.get('admin')) || 'admin'; }
   if (sp.has('planType')) { state.params!.planType = sp.get('planType')!; }
   if (sp.has('billingPlan')) { state.params!.billingPlan = sp.get('billingPlan')!; }
   if (sp.has('billingTask')) {
@@ -570,6 +607,7 @@ export function decodeUrl(gristConfig: Partial<GristLoadConfig>, location: Locat
     state.docTour = hashMap.get('#') === 'repeat-doc-tour';
     state.manageUsers = hashMap.get('#') === 'manage-users';
     state.createTeam = hashMap.get('#') === 'create-team';
+    state.upgradeTeam = hashMap.get('#') === 'upgrade-team';
   }
   return state;
 }
@@ -669,11 +707,17 @@ export interface GristLoadConfig {
   // Url for support for the browser client to use.
   helpCenterUrl?: string;
 
+  // Url for terms of service for the browser client to use
+  termsOfServiceUrl?: string;
+
   // Url for free coaching call scheduling for the browser client to use.
   freeCoachingCallUrl?: string;
 
   // Url for "contact support" button on Grist's "not found" error page
   contactSupportUrl?: string;
+
+  // Url for webinars.
+  webinarsUrl?: string;
 
   // When set, this directs the client to encode org information in path, not in domain.
   pathOnly?: boolean;
@@ -731,7 +775,8 @@ export interface GristLoadConfig {
   // List of registered plugins (used by HomePluginManager and DocPluginManager)
   plugins?: LocalPlugin[];
 
-  // If custom widget list is available.
+  // If additional custom widgets (besides the Custom URL widget) should be shown in
+  // the custom widget gallery.
   enableWidgetRepository?: boolean;
 
   // Whether there is somewhere for survey data to go.
@@ -740,7 +785,7 @@ export interface GristLoadConfig {
   // Google Tag Manager id. Currently only used to load tag manager for reporting new sign-ups.
   tagManagerId?: string;
 
-  activation?: Activation;
+  activation?: ActivationState;
 
   // List of enabled features.
   features?: IFeature[];
@@ -781,13 +826,22 @@ export interface GristLoadConfig {
   // The Grist deployment type (e.g. core, enterprise).
   deploymentType?: GristDeploymentType;
 
+  // Force enterprise deployment? For backwards compatibility with grist-ee Docker image
+  forceEnableEnterprise?: boolean;
+
   // The org containing public templates and tutorials.
   templateOrg?: string|null;
+
+  // The doc id of the tutorial shown during onboarding.
+  onboardingTutorialDocId?: string;
 
   // Whether to show the "Delete Account" button in the account page.
   canCloseAccount?: boolean;
 
   experimentalPlugins?: boolean;
+
+  // If backend has an email service for sending notifications.
+  notifierEnabled?: boolean;
 }
 
 export const Features = StringUnion(
@@ -799,6 +853,7 @@ export const Features = StringUnion(
   "multiAccounts",
   "sendToDrive",
   "tutorials",
+  "supportGrist",
 );
 export type IFeature = typeof Features.type;
 
@@ -832,10 +887,6 @@ export interface ActivationState {
     expirationDate?: string; // ISO8601 date that Grist will need reactivation.
     daysLeft?: number;       // Number of days until Grist will need reactivation.
   }
-}
-
-export interface Activation extends ActivationState {
-  isManager: boolean;
 }
 
 // Acceptable org subdomains are alphanumeric (hyphen also allowed) and of
@@ -872,7 +923,7 @@ export function getKnownOrg(): string|null {
 
 export function getHelpCenterUrl(): string {
   const defaultUrl = "https://support.getgrist.com";
-  if(isClient()) {
+  if (isClient()) {
     const gristConfig: GristLoadConfig = (window as any).gristConfig;
     return gristConfig && gristConfig.helpCenterUrl || defaultUrl;
   } else {
@@ -880,9 +931,18 @@ export function getHelpCenterUrl(): string {
   }
 }
 
+export function getTermsOfServiceUrl(): string|undefined {
+  if (isClient()) {
+    const gristConfig: GristLoadConfig = (window as any).gristConfig;
+    return gristConfig && gristConfig.termsOfServiceUrl || undefined;
+  } else {
+    return process.env.GRIST_TERMS_OF_SERVICE_URL || undefined;
+  }
+}
+
 export function getFreeCoachingCallUrl(): string {
   const defaultUrl = "https://calendly.com/grist-team/grist-free-coaching-call";
-  if(isClient()) {
+  if (isClient()) {
     const gristConfig: GristLoadConfig = (window as any).gristConfig;
     return gristConfig && gristConfig.freeCoachingCallUrl || defaultUrl;
   } else {
@@ -891,12 +951,22 @@ export function getFreeCoachingCallUrl(): string {
 }
 
 export function getContactSupportUrl(): string {
-  const defaultUrl = "https://www.getgrist.com/contact/";
-  if(isClient()) {
+  const defaultUrl = "https://www.getgrist.com/contact";
+  if (isClient()) {
     const gristConfig: GristLoadConfig = (window as any).gristConfig;
     return gristConfig && gristConfig.contactSupportUrl || defaultUrl;
   } else {
     return process.env.GRIST_CONTACT_SUPPORT_URL || defaultUrl;
+  }
+}
+
+export function getWebinarsUrl(): string {
+  const defaultUrl = "https://www.getgrist.com/webinars";
+  if (isClient()) {
+    const gristConfig: GristLoadConfig = (window as any).gristConfig;
+    return gristConfig && gristConfig.webinarsUrl || defaultUrl;
+  } else {
+    return process.env.GRIST_WEBINARS_URL || defaultUrl;
   }
 }
 

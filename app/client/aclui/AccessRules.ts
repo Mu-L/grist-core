@@ -36,14 +36,13 @@ import {ACLRuleCollection, isSchemaEditResource, SPECIAL_RULES_TABLE_ID} from 'a
 import {AclRuleProblem, AclTableDescription, getTableTitle} from 'app/common/ActiveDocAPI';
 import {BulkColValues, getColValues, RowRecord, UserAction} from 'app/common/DocActions';
 import {
-  FormulaProperties,
-  getFormulaProperties,
   RulePart,
   RuleSet,
   UserAttributeRule
 } from 'app/common/GranularAccessClause';
 import {isHiddenCol} from 'app/common/gristTypes';
 import {isNonNullish, unwrap} from 'app/common/gutil';
+import {getPredicateFormulaProperties, PredicateFormulaProperties} from 'app/common/PredicateFormula';
 import {SchemaTypes} from 'app/common/schema';
 import {MetaRowRecord} from 'app/common/TableData';
 import {
@@ -496,7 +495,7 @@ export class AccessRules extends Disposable {
     removeItem(this._userAttrRules, userAttr);
   }
 
-  public async checkAclFormula(text: string): Promise<FormulaProperties> {
+  public async checkAclFormula(text: string): Promise<PredicateFormulaProperties> {
     if (text) {
       return this.gristDoc.docComm.checkAclFormula(text);
     }
@@ -1085,6 +1084,16 @@ abstract class ObsRuleSet extends Disposable {
   public getCustomRules(): ObsRulePart[] {
     return this._body.get().filter(rule => !rule.isBuiltInOrEmpty());
   }
+
+  /**
+   * If the set applies to a special column, return its name.
+   */
+  public getSpecialColumn(): string|undefined {
+    if (this._ruleSet?.tableId === SPECIAL_RULES_TABLE_ID &&
+        this._ruleSet.colIds.length === 1) {
+      return this._ruleSet.colIds[0];
+    }
+  }
 }
 
 class ColumnObsRuleSet extends ObsRuleSet {
@@ -1465,7 +1474,6 @@ class ObsUserAttributeRule extends Disposable {
         cssColumnGroup(
           cssCell1(
             aclFormulaEditor({
-              gristTheme: this._accessRules.gristDoc.currentTheme,
               initialValue: this._charId.get(),
               readOnly: false,
               setValue: (text) => this._setUserAttr(text),
@@ -1598,7 +1606,8 @@ class ObsRulePart extends Disposable {
   // If the formula failed validation, the error message to show. Blank if valid.
   private _formulaError = Observable.create(this, '');
 
-  private _formulaProperties = Observable.create<FormulaProperties>(this, getAclFormulaProperties(this._rulePart));
+  private _formulaProperties = Observable.create<PredicateFormulaProperties>(this,
+    getAclFormulaProperties(this._rulePart));
 
   // Error message if any validation failed.
   private _error: Computed<string>;
@@ -1618,7 +1627,7 @@ class ObsRulePart extends Disposable {
 
     this._error = Computed.create(this, (use) => {
       return use(this._formulaError) ||
-        this._warnInvalidColIds(use(this._formulaProperties).usedColIds) ||
+        this._warnInvalidColIds(use(this._formulaProperties).recColIds) ||
         ( !this._ruleSet.isLastCondition(use, this) &&
           use(this._aclFormula) === '' &&
           permissionSetToText(use(this._permissions)) !== '' ?
@@ -1636,6 +1645,14 @@ class ObsRulePart extends Disposable {
         !isEqual(use(this._permissions), this._rulePart?.permissions ?? emptyPerms)
       );
     });
+    // The formula may be invalid from the beginning. Make sure we show errors in this
+    // case.
+    const text = this._aclFormula.get();
+    if (text) {
+      this._setAclFormula(text, true).catch(e => {
+        console.error(e);
+      });
+    }
   }
 
   public getRulePart(): RuleRec {
@@ -1690,7 +1707,6 @@ class ObsRulePart extends Disposable {
         cssCell2(
           wide ? cssCell4.cls('') : null,
           aclFormulaEditor({
-            gristTheme: this._ruleSet.accessRules.gristDoc.currentTheme,
             initialValue: this._aclFormula.get(),
             readOnly: this.isBuiltIn(),
             setValue: (value) => this._setAclFormula(value),
@@ -1792,8 +1808,8 @@ class ObsRulePart extends Disposable {
     return this.isBuiltIn() && this._ruleSet.getFirstBuiltIn() !== this;
   }
 
-  private async _setAclFormula(text: string) {
-    if (text === this._aclFormula.get()) { return; }
+  private async _setAclFormula(text: string, initial: boolean = false) {
+    if (text === this._aclFormula.get() && !initial) { return; }
     this._aclFormula.set(text);
     this._checkPending.set(true);
     this._formulaProperties.set({});
@@ -1811,6 +1827,12 @@ class ObsRulePart extends Disposable {
   private _warnInvalidColIds(colIds?: string[]) {
     if (!colIds || !colIds.length) { return false; }
     const allValid = new Set(this._ruleSet.getValidColIds());
+    const specialColumn = this._ruleSet.getSpecialColumn();
+    if (specialColumn === 'SeedRule') {
+      // We allow seed rules to refer to columns without checking
+      // them (until the seed rules are used).
+      return false;
+    }
     const invalid = colIds.filter(c => !allValid.has(c));
     if (invalid.length > 0) {
       return `Invalid columns: ${invalid.join(', ')}`;
@@ -1913,9 +1935,9 @@ function getChangedStatus(value: boolean): RuleStatus {
   return value ? RuleStatus.ChangedValid : RuleStatus.Unchanged;
 }
 
-function getAclFormulaProperties(part?: RulePart): FormulaProperties {
+function getAclFormulaProperties(part?: RulePart): PredicateFormulaProperties {
   const aclFormulaParsed = part?.origRecord?.aclFormulaParsed;
-  return aclFormulaParsed ? getFormulaProperties(JSON.parse(String(aclFormulaParsed))) : {};
+  return aclFormulaParsed ? getPredicateFormulaProperties(JSON.parse(String(aclFormulaParsed))) : {};
 }
 
 // Return a rule set if it applies to one of the specified columns.

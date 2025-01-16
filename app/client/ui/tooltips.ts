@@ -12,7 +12,7 @@ import {testId, theme, vars} from 'app/client/ui2018/cssVars';
 import {icon} from 'app/client/ui2018/icons';
 import {makeLinks} from 'app/client/ui2018/links';
 import {menuCssClass} from 'app/client/ui2018/menus';
-import {dom, DomContents, DomElementArg, DomElementMethod, styled} from 'grainjs';
+import {BindableValue, dom, DomContents, DomElementArg, DomElementMethod, Observable, styled} from 'grainjs';
 import Popper from 'popper.js';
 import {cssMenu, cssMenuItem, defaultMenuOptions, IPopupOptions, setPopupToCreateDom} from 'popweasel';
 import merge = require('lodash/merge');
@@ -79,6 +79,11 @@ export interface IHoverTipOptions extends ITransientTipOptions {
 
   /** Whether to show the tooltip only when the ref element overflows horizontally. */
   overflowOnly?: boolean;
+
+  /**
+   * If set tooltip won't be shown on hover. Default to false.
+   */
+  hidden?: Observable<boolean>;
 }
 
 export type ITooltipContent = ITooltipContentFunc | DomContents;
@@ -250,6 +255,7 @@ export function setHoverTooltip(
     }
   }
   function open() {
+    if (options.hidden?.get()) { return; }
     clearTimer();
     tipControl = showTooltip(refElem, ctl => tipContentFunc({...ctl, close}), options);
     const tipDom = tipControl.getDom();
@@ -260,6 +266,7 @@ export function setHoverTooltip(
     if (timeoutMs) { resetTimer(close, timeoutMs); }
   }
   function close() {
+    if (options.hidden?.get()) { return; }
     clearTimer();
     tipControl?.close();
     tipControl = undefined;
@@ -267,6 +274,8 @@ export function setHoverTooltip(
 
   // We simulate hover effect by handling mouseenter/mouseleave.
   dom.onElem(refElem, 'mouseenter', () => {
+    if (options.hidden?.get()) { return; }
+
     if (overflowOnly && (refElem as HTMLElement).offsetWidth >= refElem.scrollWidth) {
       return;
     }
@@ -324,20 +333,18 @@ export type InfoTooltipVariant = 'click' | 'hover';
  * Renders an info icon that shows a tooltip with the specified `content`.
  */
 export function infoTooltip(
-  tooltip: Tooltip,
+  tooltip: BindableValue<Tooltip>,
   options: InfoTooltipOptions = {},
   ...domArgs: DomElementArg[]
 ) {
   const {variant = 'click'} = options;
-  const content = GristTooltips[tooltip]();
-  const onOpen = () => logTelemetryEvent('viewedTip', {full: {tipName: tooltip}});
   switch (variant) {
     case 'click': {
       const {popupOptions} = options;
-      return buildClickableInfoTooltip(content, {onOpen, popupOptions}, domArgs);
+      return buildClickableInfoTooltip(tooltip, {popupOptions}, domArgs);
     }
     case 'hover': {
-      return buildHoverableInfoTooltip(content, domArgs);
+      return buildHoverableInfoTooltip(tooltip, domArgs);
     }
   }
 }
@@ -348,50 +355,55 @@ export interface ClickableInfoTooltipOptions {
 }
 
 function buildClickableInfoTooltip(
-  content: DomContents,
+  tooltip: BindableValue<Tooltip>,
   options: ClickableInfoTooltipOptions = {},
   ...domArgs: DomElementArg[]
 ) {
-  const {onOpen, popupOptions} = options;
-  return cssInfoTooltipButton('?',
-    (elem) => {
-      setPopupToCreateDom(
-        elem,
-        (ctl) => {
-          onOpen?.();
+  const {popupOptions} = options;
+  return dom.domComputed(tooltip, (tip) =>
+    cssInfoTooltipButton('?',
+      (elem) => {
+        setPopupToCreateDom(
+          elem,
+          (ctl) => {
+            logTelemetryEvent("viewedTip", { full: { tipName: tip } });
 
-          return cssInfoTooltipPopup(
-            cssInfoTooltipPopupCloseButton(
-              icon('CrossSmall'),
-              dom.on('click', () => ctl.close()),
-              testId('info-tooltip-close'),
-            ),
-            cssInfoTooltipPopupBody(
-              content,
-              testId('info-tooltip-popup-body'),
-            ),
-            dom.cls(menuCssClass),
-            dom.cls(cssMenu.className),
-            dom.onKeyDown({
-              Enter: () => ctl.close(),
-              Escape: () => ctl.close(),
-            }),
-            (popup) => { setTimeout(() => popup.focus(), 0); },
-            testId('info-tooltip-popup'),
-          );
-        },
-        {...defaultMenuOptions, ...{placement: 'bottom-end'}, ...popupOptions},
-      );
-    },
-    testId('info-tooltip'),
-    ...domArgs,
+            return cssInfoTooltipPopup(
+              cssInfoTooltipPopupCloseButton(
+                icon('CrossSmall'),
+                dom.on('click', () => ctl.close()),
+                testId('info-tooltip-close'),
+              ),
+              cssInfoTooltipPopupBody(
+                GristTooltips[tip](),
+                testId('info-tooltip-popup-body'),
+              ),
+              dom.cls(menuCssClass),
+              dom.cls(cssMenu.className),
+              dom.onKeyDown({
+                Enter: () => ctl.close(),
+                Escape: () => ctl.close(),
+              }),
+              (popup) => { setTimeout(() => popup.focus(), 0); },
+              testId('info-tooltip-popup'),
+            );
+          },
+          {...defaultMenuOptions, ...{placement: 'bottom-end'}, ...popupOptions},
+        );
+      },
+      testId('info-tooltip'),
+      ...domArgs,
+    )
   );
 }
 
-function buildHoverableInfoTooltip(content: DomContents, ...domArgs: DomElementArg[]) {
+function buildHoverableInfoTooltip(
+  tooltip: BindableValue<Tooltip>,
+  ...domArgs: DomElementArg[]
+) {
   return cssInfoTooltipIcon('?',
     hoverTooltip(() => cssInfoTooltipTransientPopup(
-      content,
+      dom.domComputed(tooltip, (tip) => GristTooltips[tip]()),
       cssTooltipCorner(testId('tooltip-origin')),
       {tabIndex: '-1'},
       testId('info-tooltip-popup'),
@@ -433,11 +445,11 @@ export interface WithInfoTooltipOptions {
  */
 export function withInfoTooltip(
   domContents: DomContents,
-  tooltip: Tooltip,
+  tooltip: BindableValue<Tooltip>,
   options: WithInfoTooltipOptions = {},
 ) {
   const {variant = 'click', domArgs, iconDomArgs, popupOptions} = options;
-  return cssDomWithTooltip(
+  return cssInfoTooltip(
     domContents,
     infoTooltip(tooltip, {variant, popupOptions}, iconDomArgs),
     ...(domArgs ?? [])
@@ -474,6 +486,12 @@ export function descriptionInfoTooltip(
     ...domArgs,
   );
 }
+
+const cssInfoTooltip = styled('div', `
+  display: flex;
+  align-items: center;
+  column-gap: 8px;
+`);
 
 const cssTooltipCorner = styled('div', `
   position: absolute;
@@ -582,7 +600,7 @@ const cssInfoTooltipPopup = styled('div', `
   display: flex;
   flex-direction: column;
   background-color: ${theme.popupBg};
-  max-width: 200px;
+  max-width: 240px;
   margin: 4px;
   padding: 0px;
 `);
@@ -605,10 +623,4 @@ const cssInfoTooltipPopupCloseButton = styled('div', `
   &:hover {
     background-color: ${theme.hover};
   }
-`);
-
-const cssDomWithTooltip = styled('div', `
-  display: flex;
-  align-items: center;
-  column-gap: 8px;
 `);

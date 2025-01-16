@@ -37,22 +37,39 @@ import {Document} from "app/gen-server/entity/Document";
 import {Group} from "app/gen-server/entity/Group";
 import {Login} from "app/gen-server/entity/Login";
 import {Organization} from "app/gen-server/entity/Organization";
-import {Product, PRODUCTS, synchronizeProducts, testDailyApiLimitFeatures} from "app/gen-server/entity/Product";
+import {Product, PRODUCTS, synchronizeProducts, teamFeatures, teamFreeFeatures} from "app/gen-server/entity/Product";
 import {User} from "app/gen-server/entity/User";
 import {Workspace} from "app/gen-server/entity/Workspace";
-import {EXAMPLE_WORKSPACE_NAME} from 'app/gen-server/lib/HomeDBManager';
+import {EXAMPLE_WORKSPACE_NAME} from 'app/gen-server/lib/homedb/HomeDBManager';
 import {Permissions} from 'app/gen-server/lib/Permissions';
-import {getOrCreateConnection, runMigrations, undoLastMigration, updateDb} from 'app/server/lib/dbUtils';
+import {
+  getOrCreateConnection, runMigrations, undoLastMigration, updateDb
+} from 'app/server/lib/dbUtils';
 import {FlexServer} from 'app/server/lib/FlexServer';
 import * as fse from 'fs-extra';
 
 const ACCESS_GROUPS = ['owners', 'editors', 'viewers', 'guests', 'members'];
 
+
+export const testDailyApiLimitFeatures = {
+  ...teamFreeFeatures,
+  baseMaxApiUnitsPerDocumentPerDay: 3,
+};
+
+export const testAuditLogsFeatures = {
+  ...teamFeatures,
+  installationAuditLogs: true,
+};
+
 const testProducts = [
   ...PRODUCTS,
-    {
+  {
     name: 'testDailyApiLimit',
     features: testDailyApiLimitFeatures,
+  },
+  {
+    name: 'testAuditLogs',
+    features: testAuditLogsFeatures,
   },
 ];
 
@@ -220,12 +237,23 @@ export const exampleOrgs = [
       }
     ]
   },
+  {
+    name: 'TestAuditLogs',
+    domain: 'testauditlogs',
+    product: 'testAuditLogs',
+    workspaces: [
+      {
+        name: 'TestAuditLogsWs',
+        docs: [],
+      }
+    ]
+  },
 ];
-
 
 const exampleUsers: {[user: string]: {[org: string]: string}} = {
   Chimpy: {
     TestDailyApiLimit: 'owners',
+    TestAuditLogs: 'owners',
     FreeTeam: 'owners',
     Chimpyland: 'owners',
     NASA: 'owners',
@@ -428,7 +456,11 @@ class Seed {
       const ba = new BillingAccount();
       ba.individual = false;
       const productName = org.product || 'Free';
-      ba.product = (await Product.findOne({where: {name: productName}}))!;
+      const product = await Product.findOne({where: {name: productName}});
+      if (!product) {
+        throw new Error(`Product not found: ${productName}`);
+      }
+      ba.product = product;
       o.billingAccount = ba;
       if (org.domain) { o.domain = org.domain; }
       if (org.host) { o.host = org.host; }
@@ -594,11 +626,12 @@ export async function createServer(port: number, initDb = createInitialDb): Prom
   await flexServer.start();
   await flexServer.initHomeDBManager();
   flexServer.addDocWorkerMap();
-  await flexServer.loadConfig();
+  await flexServer.addLoginMiddleware();
   flexServer.addHosts();
   flexServer.addAccessMiddleware();
   flexServer.addApiMiddleware();
   flexServer.addHomeApi();
+  flexServer.addScimApi();
   flexServer.addApiErrorHandlers();
   await initDb(flexServer.getHomeDBManager().connection);
   flexServer.summary();

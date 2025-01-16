@@ -2,7 +2,7 @@ import { ColumnTransform } from 'app/client/components/ColumnTransform';
 import { Cursor } from 'app/client/components/Cursor';
 import { FormulaTransform } from 'app/client/components/FormulaTransform';
 import { GristDoc } from 'app/client/components/GristDoc';
-import { addColTypeSuffix, guessWidgetOptionsSync } from 'app/client/components/TypeConversion';
+import { addColTypeSuffix, guessWidgetOptionsSync, inferColTypeSuffix } from 'app/client/components/TypeConversion';
 import { TypeTransform } from 'app/client/components/TypeTransform';
 import { FloatingEditor } from 'app/client/widgets/FloatingEditor';
 import { UnsavedChange } from 'app/client/components/UnsavedChanges';
@@ -29,11 +29,12 @@ import { FieldEditor, saveWithoutEditor } from 'app/client/widgets/FieldEditor';
 import { CellDiscussionPopup, EmptyCell } from 'app/client/widgets/DiscussionEditor';
 import { openFormulaEditor } from 'app/client/widgets/FormulaEditor';
 import { NewAbstractWidget } from 'app/client/widgets/NewAbstractWidget';
-import { NewBaseEditor } from "app/client/widgets/NewBaseEditor";
+import { IEditorConstructor } from "app/client/widgets/NewBaseEditor";
 import * as UserType from 'app/client/widgets/UserType';
 import * as UserTypeImpl from 'app/client/widgets/UserTypeImpl';
 import * as gristTypes from 'app/common/gristTypes';
 import { getReferencedTableId, isFullReferencingType } from 'app/common/gristTypes';
+import { WidgetType } from 'app/common/widgetTypes';
 import { CellValue } from 'app/plugin/GristData';
 import { bundleChanges, Computed, Disposable, fromKo,
          dom as grainjsDom, makeTestId, MultiHolder, Observable, styled, toKo } from 'grainjs';
@@ -107,11 +108,10 @@ export class FieldBuilder extends Disposable {
   private readonly _widgetCons: ko.Computed<{create: (...args: any[]) => NewAbstractWidget}>;
   private readonly _docModel: DocModel;
   private readonly _readonly: Computed<boolean>;
+  private readonly _isForm: ko.Computed<boolean>;
   private readonly _comments: ko.Computed<boolean>;
   private readonly _showRefConfigPopup: ko.Observable<boolean>;
   private readonly _isEditorActive = Observable.create(this, false);
-
-
 
   public constructor(public readonly gristDoc: GristDoc, public readonly field: ViewFieldRec,
                      private _cursor: Cursor, private _options: { isPreview?: boolean } = {}) {
@@ -127,11 +127,21 @@ export class FieldBuilder extends Disposable {
     this._readonly = Computed.create(this, (use) =>
       use(gristDoc.isReadonly) || use(field.disableEditData) || Boolean(this._options.isPreview));
 
+    this._isForm = this.autoDispose(ko.computed(() => {
+      return this.field.viewSection().widgetType() === WidgetType.Form;
+    }));
+
     // Observable with a list of available types.
     this._availableTypes = Computed.create(this, (use) => {
+      const isForm = use(this._isForm);
       const isFormula = use(this.origColumn.isFormula);
       const types: Array<IOptionFull<string>> = [];
       _.each(UserType.typeDefs, (def: any, key: string|number) => {
+        if (isForm && key === 'Attachments') {
+          // Attachments in forms are currently unsupported.
+          return;
+        }
+
         const o: IOptionFull<string> = {
           value: key as string,
           label: def.label,
@@ -194,8 +204,11 @@ export class FieldBuilder extends Disposable {
 
     // Returns the constructor for the widget, and only notifies subscribers on changes.
     this._widgetCons = this.autoDispose(koUtil.withKoUtils(ko.computed(() => {
-      return UserTypeImpl.getWidgetConstructor(this.options().widget,
-                                               this._readOnlyPureType());
+      if (this._isForm()) {
+        return UserTypeImpl.getFormWidgetConstructor(this.options().widget, this._readOnlyPureType());
+      } else {
+        return UserTypeImpl.getWidgetConstructor(this.options().widget, this._readOnlyPureType());
+      }
     })).onlyNotifyUnequal());
 
     // Computed builder for the widget.
@@ -352,7 +365,7 @@ export class FieldBuilder extends Disposable {
       // the full type, and set it. If multiple columns are selected (and all are formulas/empty),
       // then we will set the type for all of them using full type guessed from the first column.
       const column = this.field.column(); // same as this.origColumn.
-      const calculatedType = addColTypeSuffix(newType, column, this._docModel);
+      const calculatedType = inferColTypeSuffix(newType, column) ?? addColTypeSuffix(newType, column, this._docModel);
       const fields = this.field.viewSection.peek().selectedFields.peek();
       // If we selected multiple empty/formula columns, make the change for all of them.
       if (
@@ -486,7 +499,7 @@ export class FieldBuilder extends Disposable {
     // the dom created by the widgetImpl to get out of sync.
     return dom('div',
       kd.maybe(() => !this._isTransformingType() && this.widgetImpl(), (widget: NewAbstractWidget) =>
-        dom('div', widget.buildConfigDom())
+        dom('div', widget.buildConfigDom(this.gristDoc))
       )
     );
   }
@@ -745,7 +758,7 @@ export class FieldBuilder extends Disposable {
       return clearOwn();
     }
 
-    const editorCtor: typeof NewBaseEditor =
+    const editorCtor: IEditorConstructor =
       UserTypeImpl.getEditorConstructor(this.options().widget, this._readOnlyPureType());
     // constructor may be null for a read-only non-formula field, though not today.
     if (!editorCtor) {

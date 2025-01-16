@@ -1,28 +1,29 @@
 import {ApiError} from 'app/common/ApiError';
 import {BrowserSettings} from 'app/common/BrowserSettings';
-import {delay} from 'app/common/delay';
 import {CommClientConnect, CommMessage, CommResponse, CommResponseError} from 'app/common/CommTypes';
+import {delay} from 'app/common/delay';
+import {normalizeEmail} from 'app/common/emails';
 import {ErrorWithCode} from 'app/common/ErrorWithCode';
 import {FullUser, UserProfile} from 'app/common/LoginSessionAPI';
 import {TelemetryMetadata} from 'app/common/Telemetry';
 import {ANONYMOUS_USER_EMAIL} from 'app/common/UserAPI';
-import {normalizeEmail} from 'app/common/emails';
 import {User} from 'app/gen-server/entity/User';
-import {HomeDBManager} from 'app/gen-server/lib/HomeDBManager';
 import {ActiveDoc} from 'app/server/lib/ActiveDoc';
 import {Authorizer} from 'app/server/lib/Authorizer';
 import {ScopedSession} from 'app/server/lib/BrowserSession';
 import type {Comm} from 'app/server/lib/Comm';
 import {DocSession} from 'app/server/lib/DocSession';
+import {GristServerSocket} from 'app/server/lib/GristServerSocket';
+import {HomeDBManager} from 'app/gen-server/lib/homedb/HomeDBManager';
 import log from 'app/server/lib/log';
-import {LogMethods} from "app/server/lib/LogMethods";
+import {LogMethods} from 'app/server/lib/LogMethods';
 import {MemoryPool} from 'app/server/lib/MemoryPool';
-import {shortDesc} from 'app/server/lib/shortDesc';
 import {fromCallback} from 'app/server/lib/serverUtils';
-import {i18n} from 'i18next';
+import {shortDesc} from 'app/server/lib/shortDesc';
 import * as crypto from 'crypto';
+import {IncomingMessage} from 'http';
+import {i18n} from 'i18next';
 import moment from 'moment';
-import * as WebSocket from 'ws';
 
 // How many messages and bytes to accumulate for a disconnected client before booting it.
 // The benefit is that a client who temporarily disconnects and reconnects without missing much,
@@ -97,8 +98,8 @@ export class Client {
   private _missedMessagesTotalLength: number = 0;
   private _destroyTimer: NodeJS.Timer|null = null;
   private _destroyed: boolean = false;
-  private _websocket: WebSocket|null;
-  private _websocketEventHandlers: Array<{event: string, handler: (...args: any[]) => void}> = [];
+  private _websocket: GristServerSocket|null = null;
+  private _req: IncomingMessage|null = null;
   private _org: string|null = null;
   private _profile: UserProfile|null = null;
   private _user: FullUser|undefined = undefined;
@@ -131,18 +132,25 @@ export class Client {
     return this._locale;
   }
 
-  public setConnection(websocket: WebSocket, counter: string|null, browserSettings: BrowserSettings) {
+  public setConnection(options: {
+    websocket: GristServerSocket;
+    req: IncomingMessage;
+    counter: string|null;
+    browserSettings: BrowserSettings;
+  }) {
+    const {websocket, req, counter, browserSettings} = options;
     this._websocket = websocket;
+    this._req = req;
     this._counter = counter;
     this.browserSettings = browserSettings;
 
-    const addHandler = (event: string, handler: (...args: any[]) => void) => {
-      websocket.on(event, handler);
-      this._websocketEventHandlers.push({event, handler});
-    };
-    addHandler('error', (err: unknown) => this._onError(err));
-    addHandler('close', () => this._onClose());
-    addHandler('message', (msg: string) => this._onMessage(msg));
+    websocket.onerror = (err: Error) => this._onError(err);
+    websocket.onclose = () => this._onClose();
+    websocket.onmessage = (msg: string) => this._onMessage(msg);
+  }
+
+  public getConnectionRequest(): IncomingMessage|null {
+    return this._req;
   }
 
   /**
@@ -189,7 +197,7 @@ export class Client {
 
   public interruptConnection() {
     if (this._websocket) {
-      this._removeWebsocketListeners();
+      this._websocket.removeAllListeners();
       this._websocket.terminate();  // close() is inadequate when ws routed via loadbalancer
       this._websocket = null;
     }
@@ -359,7 +367,7 @@ export class Client {
       // See also my report at https://stackoverflow.com/a/48411315/328565
       await delay(250);
 
-      if (!this._destroyed && this._websocket?.readyState === WebSocket.OPEN) {
+      if (!this._destroyed && this._websocket?.isOpen) {
         await this._sendToWebsocket(JSON.stringify({...clientConnectMsg, dup: true}));
       }
     } catch (err) {
@@ -604,7 +612,7 @@ export class Client {
   /**
    * Processes an error on the websocket.
    */
-  private _onError(err: unknown) {
+  private _onError(err: Error) {
     this._log.warn(null, "onError", err);
     // TODO Make sure that this is followed by onClose when the connection is lost.
   }
@@ -613,7 +621,7 @@ export class Client {
    * Processes the closing of a websocket.
    */
   private _onClose() {
-    this._removeWebsocketListeners();
+    this._websocket?.removeAllListeners();
 
     // Remove all references to the websocket.
     this._websocket = null;
@@ -627,17 +635,6 @@ export class Client {
       }
       this._log.info(null, "websocket closed; will discard client in %s sec", Deps.clientRemovalTimeoutMs / 1000);
       this._destroyTimer = setTimeout(() => this.destroy(), Deps.clientRemovalTimeoutMs);
-    }
-  }
-
-  private _removeWebsocketListeners() {
-    if (this._websocket) {
-      // Avoiding websocket.removeAllListeners() because WebSocket.Server registers listeners
-      // internally for websockets it keeps track of, and we should not accidentally remove those.
-      for (const {event, handler} of this._websocketEventHandlers) {
-        this._websocket.off(event, handler);
-      }
-      this._websocketEventHandlers = [];
     }
   }
 }

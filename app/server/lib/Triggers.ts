@@ -72,6 +72,7 @@ type Trigger = MetaRowRecord<"_grist_Triggers">;
 export interface WebHookSecret {
   url: string;
   unsubscribeKey: string;
+  authorization?: string;
 }
 
 // Work to do after fetching values from the document
@@ -259,6 +260,7 @@ export class DocTriggers {
     const getTableId = docData.getMetaTable("_grist_Tables").getRowPropFunc("tableId");
     const getColId = docData.getMetaTable("_grist_Tables_column").getRowPropFunc("colId");
     const getUrl = async (id: string) => (await this._getWebHook(id))?.url ?? '';
+    const getAuthorization = async (id: string) => (await this._getWebHook(id))?.authorization ?? '';
     const getUnsubscribeKey = async (id: string) => (await this._getWebHook(id))?.unsubscribeKey ?? '';
     const resultTable: WebhookSummary[] = [];
 
@@ -271,12 +273,14 @@ export class DocTriggers {
       for (const act of webhookActions) {
         // Url, probably should be hidden for non-owners (but currently this API is owners only).
         const url = await getUrl(act.id);
+        const authorization = await getAuthorization(act.id);
         // Same story, should be hidden.
         const unsubscribeKey = await getUnsubscribeKey(act.id);
         if (!url || !unsubscribeKey) {
           // Webhook might have been deleted in the mean time.
           continue;
         }
+        const decodedWatchedColRefList = decodeObject(t.watchedColRefList) as number[] || [];
         // Report some basic info and usage stats.
         const entry: WebhookSummary = {
           // Id of the webhook
@@ -284,10 +288,12 @@ export class DocTriggers {
           fields: {
             // Url, probably should be hidden for non-owners (but currently this API is owners only).
             url,
+            authorization,
             unsubscribeKey,
             // Other fields used to register this webhook.
             eventTypes: decodeObject(t.eventTypes) as string[],
             isReadyColumn: getColId(t.isReadyColRef) ?? null,
+            watchedColIds: decodedWatchedColRefList.map((columnRef) => getColId(columnRef)),
             tableId: getTableId(t.tableRef) ?? null,
             // For future use - for now every webhook is enabled.
             enabled: t.enabled,
@@ -509,6 +515,21 @@ export class DocTriggers {
         }
       }
 
+      if (trigger.watchedColRefList) {
+        for (const colRef of trigger.watchedColRefList.slice(1)) {
+          if (!this._validateColId(colRef as number, trigger.tableRef)) {
+            // column does not belong to table, let's ignore trigger and log stats
+            for (const action of webhookActions) {
+              const colId = this._getColId(colRef as number); // no validation
+              const tableId = this._getTableId(trigger.tableRef);
+              const error = `column is not valid: colId ${colId} does not belong to ${tableId}`;
+              this._stats.logInvalid(action.id, error).catch(e => log.error("Webhook stats failed to log", e));
+            }
+            continue;
+          }
+        }
+      }
+
       // TODO: would be worth checking that the trigger's fields are valid (ie: eventTypes, url,
       // ...) as there's no guarantee that they are.
 
@@ -585,9 +606,21 @@ export class DocTriggers {
       }
     }
 
+    const colIdsToCheck: Array<string> = [];
+    if (trigger.watchedColRefList) {
+      for (const colRef of trigger.watchedColRefList.slice(1)) {
+        colIdsToCheck.push(this._getColId(colRef as number)!);
+      }
+    }
+
     let eventType: EventType;
     if (readyBefore) {
-      eventType = "update";
+      // check if any of the columns to check were changed to consider this an update
+      if (colIdsToCheck.length === 0 || colIdsToCheck.some(colId => tableDelta.columnDeltas[colId]?.[rowId])) {
+        eventType = "update";
+      } else {
+        return false;
+      }
       // If we allow subscribing to deletion in the future
       // if (recordDelta.existedAfter) {
       //   eventType = "update";
@@ -654,22 +687,23 @@ export class DocTriggers {
       const batch = _.takeWhile(this._webHookEventQueue.slice(0, 100), {id});
       const body = JSON.stringify(batch.map(e => e.payload));
       const url = await this._getWebHookUrl(id);
+      const authorization = (await this._getWebHook(id))?.authorization || "";
       if (this._loopAbort.signal.aborted) {
         continue;
       }
-      let meta: Record<string, any>|undefined;
-
+      let meta: {webhookId: string; host: string, quantity: number} | undefined;
       let success: boolean;
       if (!url) {
         success = true;
       } else {
         await this._stats.logStatus(id, 'sending');
-        meta = {numEvents: batch.length, webhookId: id, host: new URL(url).host};
+        meta = {webhookId: id, host: new URL(url).host, quantity: batch.length};
         this._log("Sending batch of webhook events", meta);
         this._activeDoc.logTelemetryEvent(null, 'sendingWebhooks', {
-          limited: {numEvents: meta.numEvents},
+          limited: {numEvents: meta.quantity},
         });
-        success = await this._sendWebhookWithRetries(id, url, body, batch.length, this._loopAbort.signal);
+        success = await this._sendWebhookWithRetries(
+          id, url, authorization, body, batch.length, this._loopAbort.signal);
         if (this._loopAbort.signal.aborted) {
           continue;
         }
@@ -708,6 +742,25 @@ export class DocTriggers {
         await this._stats.logStatus(id, 'idle');
         if (meta) {
           this._log("Successfully sent batch of webhook events", meta);
+          const {webhookId, host, quantity} = meta;
+          this._activeDoc.logAuditEvent(null, {
+            action: "document.deliver_webhook_events",
+            actor: {
+              type: "system",
+            },
+            details: {
+              document: {
+                id: this._docId,
+              },
+              webhook: {
+                id: webhookId,
+                events: {
+                  delivered_to: host,
+                  quantity,
+                },
+              },
+            },
+          });
         }
       }
 
@@ -741,7 +794,8 @@ export class DocTriggers {
     return this._drainingQueue ? Math.min(5, TRIGGER_MAX_ATTEMPTS) : TRIGGER_MAX_ATTEMPTS;
   }
 
-  private async _sendWebhookWithRetries(id: string, url: string, body: string, size: number, signal: AbortSignal) {
+  private async _sendWebhookWithRetries(
+    id: string, url: string, authorization: string, body: string, size: number, signal: AbortSignal) {
     const maxWait = 64;
     let wait = 1;
     for (let attempt = 0; attempt < this._maxWebhookAttempts; attempt++) {
@@ -757,6 +811,7 @@ export class DocTriggers {
           body,
           headers: {
             'Content-Type': 'application/json',
+            ...(authorization ? {'Authorization': authorization} : {}),
           },
           signal,
           agent: proxyAgent(new URL(url)),

@@ -10,20 +10,24 @@ import six
 from six.moves import xrange
 
 import acl
+from acl import parse_acl_formulas
 import depend
 import gencode
-from acl_formula import parse_acl_formula_json
+from dropdown_condition import parse_dropdown_conditions
+import dropdown_condition
 import actions
 import column
 import sort_specs
 import identifiers
 from objtypes import strict_equal, encode_object
+from reverse_references import check_desired_reverse_col, pick_reverse_col_label
 import schema
 from schema import RecalcWhen
 import summary
 import import_actions
 import textbuilder
 import usertypes
+from usertypes import get_referenced_table_id, get_pure_type, is_compatible_ref_type
 import treeview
 
 from table import get_validation_func_name
@@ -49,7 +53,7 @@ _inherited_groupby_col_fields = {'colId', 'widgetOptions', 'label', 'untieColIdF
 _inherited_summary_col_fields = {'colId', 'label'}
 
 # Schema properties that can be modified using ModifyColumn docaction.
-_modify_col_schema_props = {'type', 'formula', 'isFormula'}
+_modify_col_schema_props = {'type', 'formula', 'isFormula', 'reverseColId'}
 
 
 # A few generic helpers.
@@ -188,8 +192,8 @@ def allowed_summary_change(key, updated, original):
   """
   Checks if summary group by column can be modified.
   """
-  # Conditional styles are allowed
-  if updated == original or key == 'rules':
+  allowed_fields_to_change = {'rules', 'description'}
+  if updated == original or key in allowed_fields_to_change:
     return True
   elif key == 'widgetOptions':
     try:
@@ -197,18 +201,12 @@ def allowed_summary_change(key, updated, original):
       original_options = json.loads(original or '{}')
     except ValueError:
       return False
-    # Unfortunately all widgetOptions are allowed to change, except choice items. But it is
-    # better to list those that can be changed.
-    # TODO: move choice items to separate column
-    allowed_to_change = {'widget', 'dateFormat', 'timeFormat', 'isCustomDateFormat', 'alignment',
-                         'fillColor', 'textColor', 'isCustomTimeFormat', 'isCustomDateFormat',
-                         'numMode', 'numSign', 'decimals', 'maxDecimals', 'currency',
-                         'fontBold', 'fontItalic', 'fontUnderline', 'fontStrikethrough',
-                         'rulesOptions'}
+    # Can do anything, but those options must be the same
+    must_be_the_same = {'choices', 'choiceOptions'}
     # Helper function to remove protected keys from dictionary.
-    def trim(options):
-      return {k: v for k, v in options.items() if k not in allowed_to_change}
-    return trim(updated_options) == trim(original_options)
+    def protected_options(options):
+      return {k: v for k, v in options.items() if k in must_be_the_same}
+    return protected_options(updated_options) == protected_options(original_options)
   else:
     return False
 
@@ -226,6 +224,12 @@ class UserActions(object):
     # global _action_method_overrides, but with methods *bound* to this UserActions instance.
     self._overrides = {key: method.__get__(self, UserActions)
                        for key, method in six.iteritems(_action_method_overrides)}
+
+  def get_docmodel(self):
+    """
+    Getter for the docmodel.
+    """
+    return self._docmodel
 
   @contextmanager
   def indirect_actions(self):
@@ -252,6 +256,26 @@ class UserActions(object):
       self._engine.out_actions.stored.append(action)
       self._engine.out_actions.direct.append(self._indirection_level == DIRECT_ACTION)
       self._engine.apply_doc_action(action)
+
+  def _do_extra_doc_action(self, action):
+    # It this is Update, Add (or Bulks), run thouse actions through ensure_column_accepts_data
+    # to ensure that the data is valid.
+
+    converted_action = action
+
+    if isinstance(action, (actions.BulkAddRecord, actions.BulkUpdateRecord)):
+      if isinstance(action, actions.BulkAddRecord):
+        ActionType = actions.BulkAddRecord
+      else:
+        ActionType = actions.BulkUpdateRecord
+
+      # Iterate over every column and make sure it accepts data.
+      table_id, row_ids, column_values = action
+      for col_id, values in six.iteritems(column_values):
+        column_values[col_id] = self._ensure_column_accepts_data(table_id, col_id, values)
+      converted_action = ActionType(table_id, row_ids, column_values)
+
+    return self._do_doc_action(converted_action)
 
   def _bulk_action_iter(self, table_id, row_ids, col_values=None):
     """
@@ -394,7 +418,7 @@ class UserActions(object):
 
     # Whenever we add new rows, remember the mapping from any negative row_ids to their final
     # values. This allows the negative_row_ids to be used as Reference values in subsequent
-    # actions in the same bundle.
+    # actions in the same bundle, and in UpdateRecord/RemoveRecord actions.
     self._engine.out_actions.summary.update_new_rows_map(table_id, row_ids, filled_row_ids)
 
     # Convert entered values to the correct types.
@@ -404,7 +428,7 @@ class UserActions(object):
 
     # If any extra actions were generated (e.g. to adjust positions), apply them.
     for a in extra_actions:
-      self._do_doc_action(a)
+      self._do_extra_doc_action(a)
 
     # We could set static default values for omitted data columns, or we can ensure that other
     # code (JS, DocStorage) is aware of the static defaults. Since other code is already aware,
@@ -437,9 +461,7 @@ class UserActions(object):
 
   @override_action('BulkAddRecord', '_grist_ACLRules')
   def _addACLRules(self, table_id, row_ids, col_values):
-    # Automatically populate aclFormulaParsed value by parsing aclFormula.
-    if 'aclFormula' in col_values:
-      col_values['aclFormulaParsed'] = [parse_acl_formula_json(v) for v in col_values['aclFormula']]
+    parse_acl_formulas(col_values)
     return self.doBulkAddOrReplace(table_id, row_ids, col_values)
 
   #----------------------------------------
@@ -447,6 +469,9 @@ class UserActions(object):
   # ----------------------------------------
 
   def doBulkUpdateRecord(self, table_id, row_ids, columns):
+    # Replace negative ids that may refer to rows just added to this table in this bundle.
+    row_ids = self._engine.out_actions.summary.translate_new_row_ids(table_id, row_ids)
+
     # Convert passed-in values to the column's correct types (or alttext, or errors) and trim any
     # unchanged values.
     action, extra_actions = self._engine.convert_action_values(
@@ -499,7 +524,7 @@ class UserActions(object):
 
     # If any extra actions were generated (e.g. to adjust positions), apply them.
     for a in extra_actions:
-      self._do_doc_action(a)
+      self._do_extra_doc_action(a)
 
     # Finally, update the record
     self._do_doc_action(action)
@@ -539,8 +564,9 @@ class UserActions(object):
 
   @useraction
   def BulkUpdateRecord(self, table_id, row_ids, columns):
-    columns = actions.decode_bulk_values(columns)
+    return self._BulkUpdateRecord_decoded(table_id, row_ids, actions.decode_bulk_values(columns))
 
+  def _BulkUpdateRecord_decoded(self, table_id, row_ids, columns):
     # Handle special tables, updates to which imply metadata actions.
 
     # Check that the update is valid.
@@ -633,7 +659,7 @@ class UserActions(object):
       if 'type' in values:
         self.doModifyColumn(col.tableId, col.colId, {'type': 'Int'})
 
-    make_acl_updates = acl.prepare_acl_table_renames(self._docmodel, self, table_renames)
+    make_acl_updates = acl.prepare_acl_table_renames(self, table_renames)
 
     # Collect all the table renames, and do the actual schema actions to apply them.
     for tbl, values in update_pairs:
@@ -655,6 +681,8 @@ class UserActions(object):
 
   @override_action('BulkUpdateRecord', '_grist_Tables_column')
   def _updateColumnRecords(self, table_id, row_ids, col_values):
+    # pylint: disable=too-many-statements
+
     # Does various automatic adjustments required for column updates.
     # col_values is a dict of arrays, each array containing values for all col_recs. We process
     # each column individually (to keep code simpler), in _adjust_one_column_update.
@@ -672,6 +700,7 @@ class UserActions(object):
     #     columns for all summary tables of the same source table).
     # (4) Updates to the source columns of summary group-by columns (including renaming and type
     #     changes) should be copied to those group-by columns.
+    parse_dropdown_conditions(col_values)
 
     # A list of individual (col_rec, values) updates, where values is a per-column dict.
     col_updates = OrderedDict()
@@ -688,12 +717,23 @@ class UserActions(object):
                if has_diff_value(values, 'colId', c.colId)}
 
     if renames:
+      # When a column rename has occurred, we need to update the corresponding references in
+      # formula, ACL rules and dropdown conditions.
+
       # Build up a dictionary mapping col_ref of each affected formula to the new formula text.
       formula_updates = self._prepare_formula_renames(renames)
 
       # For any affected columns, include the formula into the update.
       for col_rec, new_formula in sorted(six.iteritems(formula_updates)):
         col_updates.setdefault(col_rec, {}).setdefault('formula', new_formula)
+
+      # For any renames of columns that have a reverse, tag their reverse column as
+      # changing, so that we can update its schema.
+      for c, values in list(col_updates.items()):
+        reverse_col_ref = values.get('reverseCol', c.reverseCol.id)
+        if has_diff_value(values, 'colId', c.colId) and reverse_col_ref:
+          rcol_rec = self._docmodel.columns.table.get_record(reverse_col_ref)
+          col_updates.setdefault(rcol_rec, {}).setdefault('reverseCol', c.id)
 
     update_pairs = col_updates.items()
 
@@ -704,6 +744,10 @@ class UserActions(object):
       if col.summarySourceCol:
         underlying_updates = col_updates.get(col.summarySourceCol, {})
         for key, value in six.iteritems(values):
+          if key == 'summarySourceCol' and not value and not col.summarySourceCol._exists():
+            # We are unsetting summarySourceCol because it no longer exists. That's fine; the
+            # record we are updating is actually also about to be deleted.
+            continue
           if key in ('displayCol', 'visibleCol'):
             # These can't always match the underlying column, and can now be changed in the
             # group-by column. (Perhaps the same should be permitted for all widget options.)
@@ -718,12 +762,22 @@ class UserActions(object):
           if not allowed_summary_change(key, value, expected):
             raise ValueError("Cannot modify summary group-by column '%s'" % col.colId)
 
-    make_acl_updates = acl.prepare_acl_col_renames(self._docmodel, self, renames)
-
     rename_summary_tables = set()
     for c, values in update_pairs:
       # Trigger ModifyColumn and RenameColumn as necessary
       schema_colinfo = select_keys(values, _modify_col_schema_props)
+
+      # If we set reverseCol in metadata, that turns into reverseColId in schema (which is used to
+      # generate Python code). Note that _adjust_one_column_update has already done sanity checks.
+      if 'reverseCol' in values:
+        reverse_col_ref = values['reverseCol']
+        if reverse_col_ref:
+          reverse_col = self._docmodel.columns.table.get_record(reverse_col_ref)
+          reverse_updates = col_updates.get(reverse_col, {})
+          schema_colinfo['reverseColId'] = reverse_updates.get('colId', reverse_col.colId)
+        else:
+          schema_colinfo['reverseColId'] = None
+
       if schema_colinfo:
         self.doModifyColumn(c.parentId.tableId, c.colId, schema_colinfo)
       if has_diff_value(values, 'colId', c.colId):
@@ -732,17 +786,20 @@ class UserActions(object):
           rename_summary_tables.add(c.parentId)
 
     # If we change a column's type, we should ALSO unset each affected field's displayCol.
-    type_changed = [c for c, values in update_pairs if has_diff_value(values, 'type', c.type)]
+    type_changed = [c for c, values in update_pairs if has_diff_value(values, 'type', c.type)
+                      and not is_compatible_ref_type(values.get('type', c.type), c.type)]
     self._docmodel.update([f for c in type_changed for f in c.viewFields],
-                          displayCol=0)
+                          displayCol=0, visibleCol=0)
 
     self.doBulkUpdateFromPairs(table_id, update_pairs)
+
+    if renames:
+      acl.perform_acl_rule_renames(self, renames)
+      dropdown_condition.perform_dropdown_condition_renames(self, renames)
 
     for table_id in rebuild_summary_tables:
       table = self._engine.tables[table_id]
       self._engine._update_table_model(table, table.user_table)
-
-    make_acl_updates()
 
     for table in rename_summary_tables:
       groupby_col_ids = [c.colId for c in table.columns if c.summarySourceCol]
@@ -781,11 +838,14 @@ class UserActions(object):
 
     self.doBulkUpdateRecord(table_id, row_ids, col_values)
 
+  @override_action('BulkUpdateRecord', '_grist_Views_section_field')
+  def _updateViewSectionFields(self, table_id, row_ids, col_values):
+    parse_dropdown_conditions(col_values)
+    return self.doBulkUpdateRecord(table_id, row_ids, col_values)
+
   @override_action('BulkUpdateRecord', '_grist_ACLRules')
   def _updateACLRules(self, table_id, row_ids, col_values):
-    # Automatically populate aclFormulaParsed value by parsing aclFormula.
-    if 'aclFormula' in col_values:
-      col_values['aclFormulaParsed'] = [parse_acl_formula_json(v) for v in col_values['aclFormula']]
+    parse_acl_formulas(col_values)
     return self.doBulkUpdateRecord(table_id, row_ids, col_values)
 
   def _prepare_formula_renames(self, renames):
@@ -852,13 +912,37 @@ class UserActions(object):
       col_values['type'] = guess_type(self._get_column_values(col), convert=False)
 
     # If changing the type of a column, unset its displayCol by default.
-    if 'type' in col_values:
+    new_type = col_values.get('type', col.type)
+    if 'type' in col_values and not is_compatible_ref_type(new_type, col.type):
       col_values.setdefault('displayCol', 0)
+      col_values.setdefault('visibleCol', 0)
 
     # Collect all updates for dependent summary columns.
     results = []
     def add(cols, value_dict):
       results.extend((c, summary.skip_rules_update(c, value_dict)) for c in cols)
+
+    # If changing reverseCol, do some sanity checks and update its counterpart.
+    if has_diff_value(col_values, 'reverseCol', col.reverseCol):
+      reverse_col_ref = col_values['reverseCol']
+
+      if col.reverseCol and (col.reverseCol.id in self._docmodel.columns.table.row_ids):
+        # If unsetting (or changing) reverseCol, unset the counterpart that was pointing back.
+        # The existence check above is to handle case when reverseCol is what just got deleted.
+        results.append((col.reverseCol, {'reverseCol': 0}))
+
+      if reverse_col_ref:
+        # If setting new reverseCol, set its counterpart pointing back to us.
+        rcol_rec = self._docmodel.columns.table.get_record(reverse_col_ref)
+        check_desired_reverse_col(new_type, rcol_rec)
+        results.append((rcol_rec, {'reverseCol': col.id}))
+
+    # If a column has a reverseCol, we restrict some changes to it while reverseCol is set.
+    if col_values.get('reverseCol', col.reverseCol):
+      if not is_compatible_ref_type(new_type, col.type):
+        raise ValueError("invalid change to type of a two-way reference column")
+      if col_values.get('formula'):
+        raise ValueError("cannot set formula on a two-way reference column")
 
     source_table = col.parentId.summarySourceTable
     if source_table:  # This is a summary-table column.
@@ -1068,6 +1152,9 @@ class UserActions(object):
     assert all(isinstance(r, (int, table.Record)) for r in row_ids_or_records)
     row_ids = [int(r) for r in row_ids_or_records]
 
+    # Replace negative ids that may refer to rows just added to this table in this bundle.
+    row_ids = self._engine.out_actions.summary.translate_new_row_ids(table_id, row_ids)
+
     self._do_doc_action(actions.BulkRemoveRecord(table_id, row_ids))
 
     # Also remove any references to this row from other tables.
@@ -1077,10 +1164,19 @@ class UserActions(object):
         continue
       updates = ref_col.get_updates_for_removed_target_rows(row_id_set)
       if updates:
-        self._do_doc_action(actions.BulkUpdateRecord(ref_col.table_id,
-          [row_id for (row_id, value) in updates],
-          { ref_col.col_id: [value for (row_id, value) in updates] }
-        ))
+        table_id = ref_col.table_id
+        rows = [row_id for (row_id, value) in updates]
+        columns = {ref_col.col_id: [value for (row_id, value) in updates]}
+        if ref_col.table_id.startswith('_grist_'):
+          # Previously we sent this as a docaction. Now we do a proper useraction with all the
+          # processing that involves, e.g. triggering two-way-reference updates, and also all the
+          # metadata checks and updates.
+          self._BulkUpdateRecord_decoded(table_id, rows, columns)
+        else:
+          # But for normal user tables (with two-way references), we must still use the docaction,
+          # otherwise we'd invoke two-way update logic, and the reverse column would try to update
+          # rows that we just deleted.
+          self._do_doc_action(actions.BulkUpdateRecord(table_id, rows, columns))
 
   @useraction
   def RemoveRecord(self, table_id, row_id):
@@ -1114,6 +1210,11 @@ class UserActions(object):
   @override_action('BulkRemoveRecord', '_grist_Tables')
   def _removeTableRecords(self, table_id, row_ids):
     remove_table_recs = [rec for i, rec in self._bulk_action_iter(table_id, row_ids)]
+
+    # If there are any two-way reference columns in this table, break the connection.
+    cols = (c for t in remove_table_recs for c in t.columns if c.reverseCol)
+    if cols:
+      self._docmodel.update(cols, reverseCol=0)
 
     # If there are summary tables based on this table, remove those too.
     remove_table_recs.extend(st for t in remove_table_recs for st in t.summaryTables)
@@ -1171,15 +1272,15 @@ class UserActions(object):
     if not (visible_col and display_col):
       # If there's no visible/display column, we just keep row IDs.
       if col.type.startswith("Ref:"):
-        self.ModifyColumn(table_id, col_id, dict(type="Int"))
+        self.ModifyColumn(table_id, col_id, {"type": "Int", "reverseCol": 0})
       else:
         # Data columns can't be of type Any, and there's no type that can
         # hold a list of numbers. So we convert the lists of row IDs
         # to strings containing comma-separated row IDs.
         # We need to get the values before changing the column type.
         table = self._engine.tables[table_id]
-        new_values = [",".join(map(str, row)) for row in self._get_column_values(col)]
-        self.ModifyColumn(table_id, col_id, dict(type="Text"))
+        new_values = [",".join(map(str, row or [])) for row in self._get_column_values(col)]
+        self.ModifyColumn(table_id, col_id, {"type": "Text", "reverseCol": 0})
         self.BulkUpdateRecord(table_id, list(table.row_ids), {col_id: new_values})
       return
 
@@ -1581,7 +1682,7 @@ class UserActions(object):
     to_formula = bool(col_info.get('isFormula', from_formula))
 
     old_col_info = schema.col_to_dict(self._engine.schema[table_id].columns[col_id],
-                                      include_id=False)
+                                      include_id=False, include_default=True)
 
     col_info = {k: v for k, v in six.iteritems(col_info) if old_col_info.get(k, v) != v}
     if not col_info:
@@ -1636,6 +1737,11 @@ class UserActions(object):
         self._engine.out_actions.flush_calc_changes_for_column(table_id, col_id)
       finally:
         self._engine.out_actions.undo.append(mod_action)
+
+    # Give two-way reference columns a chance to get rebuilt after a Ref<>RefList switch.
+    if 'type' in col_info:
+      update_action = new_column.recalc_from_reverse_values()
+      self._do_doc_action(update_action)
 
   @useraction
   def ConvertFromColumn(self, table_id, src_col_id, dst_col_id, typ, widgetOptions, visibleColRef):
@@ -1701,6 +1807,13 @@ class UserActions(object):
     if widgetOptions is None:
       widgetOptions = src_col.widgetOptions
 
+    # If we are changing type, and this column is reverse column, make sure it is compatible.
+    # If not, break the connection first, UI should have already warned the user.
+    existing_type = dst_col.type
+    new_type = src_col.type
+    if not is_compatible_ref_type(new_type, existing_type) and dst_col.reverseCol:
+      self._docmodel.update([dst_col, src_col], reverseCol=0)
+
     # Update the destination column to match the source's type and options. Also unset displayCol,
     # except if src_col has a displayCol, then keep it unchanged until SetDisplayFormula below.
     self._docmodel.update([dst_col], type=src_col.type, widgetOptions=[widgetOptions],
@@ -1730,8 +1843,7 @@ class UserActions(object):
         changed_values.append(src_value)
 
     # Produce the BulkUpdateRecord update.
-    self._do_doc_action(actions.BulkUpdateRecord(table_id, changed_rows,
-                                                 {dst_col_id: changed_values}))
+    self._BulkUpdateRecord_decoded(table_id, changed_rows, {dst_col_id: changed_values})
 
   @useraction
   def MaybeCopyDisplayFormula(self, src_col_ref, dst_col_ref):
@@ -1824,6 +1936,67 @@ class UserActions(object):
     updated_rules = existing_rules + [new_rule]
     self._docmodel.update([rule_owner], rules=[encode_object(updated_rules)])
 
+  @useraction
+  def AddReverseColumn(self, table_id, col_id):
+    """
+    Adds a reverse reference column corresponding to `col_id`. This creates a two-way binding
+    between two Ref/RefList columns. Updating one of them will result in updating the other. To
+    break the binding, one of the columns should be removed (using a regular DocAction).
+
+    If a Foo column (Ref:Table1) has a reverse Bar column (RefList:Table2), then updating the Foo
+    column with a doc action like:
+      ['UpdateRecord', 'Table2', 1, {'Foo': 2}]
+    will result in updating the Bar column with a "back reference" like:
+      ['UpdateRecord', 'Table1', 2, {'Bar': ['L', 1]}]
+
+    By default, the type of the reverse column added is RefList, as the column `col_id` might have
+    multiple references (duplicated data). To properly represent it, the reverse column must be of
+    RefList type. The user can change the type of both columns (or either one) to Ref type, but the
+    engine will prevent it if one of the columns has duplicated values (more than one row in Table1
+    points to the same row in Table2).
+
+    The binding is symmetric. There is no "primary" or "secondary" column. Both columns are equal,
+    and the user can remove either of them and recreate it later from the other one.
+    """
+    col_rec = self._docmodel.get_column_rec(table_id, col_id)
+    if col_rec.reverseCol:
+      raise ValueError('reverse reference column already exists')
+    target_table_id = get_referenced_table_id(col_rec.type)
+    if not target_table_id:
+      raise ValueError('reverse column can only be added to a reference column')
+
+    reverse_label = pick_reverse_col_label(self._docmodel, col_rec)
+    ret = self.AddVisibleColumn(target_table_id, reverse_label, {
+      "isFormula": False,
+      "type": "RefList:" + table_id,
+      "label": reverse_label,
+    })
+    added_col = self._docmodel.columns.table.get_record(ret['colRef'])
+    self._docmodel.update([col_rec], reverseCol=added_col.id)
+    self._pick_and_set_display_col(added_col)
+
+    # Fill in the new column.
+    col_obj = self._docmodel.get_table(table_id).table.get_column(col_id)
+    update_action = col_obj.recalc_from_reverse_values()
+    self._do_doc_action(update_action)
+
+    return ret
+
+  def _pick_and_set_display_col(self, col_rec):
+    target_table_id = get_referenced_table_id(col_rec.type)
+    target_table_rec = self._docmodel.get_table_rec(target_table_id)
+
+    # Types that could conceivably be identifiers for a record (this is very loose, but at
+    # least excludes types like references and attachments).
+    maybe_ident_types = ['Text', 'Any', 'Numeric', 'Int', 'Date', 'DateTime', 'Choice']
+
+    # Use the first column from target table, if it's a reasonable type.
+    for vcol in target_table_rec.columns:
+      if column.is_visible_column(vcol.colId) and get_pure_type(vcol.type) in maybe_ident_types:
+        self._docmodel.update([col_rec], visibleCol=vcol.id)
+        self.SetDisplayFormula(col_rec.tableId, None, col_rec.id,
+            '$%s.%s' % (col_rec.colId, vcol.colId))
+        break
 
   #----------------------------------------
   # User actions on tables.

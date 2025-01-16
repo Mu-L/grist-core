@@ -1,8 +1,9 @@
+import {AccessLevel} from 'app/common/CustomWidget';
 import {addToRepl, assert, driver, Key} from 'mocha-webdriver';
 import * as gu from 'test/nbrowser/gristUtils';
 import {server, setupTestSuite} from 'test/nbrowser/testUtils';
 import {addStatic, serveSomething} from 'test/server/customUtil';
-import {AccessLevel} from 'app/common/CustomWidget';
+import {EnvironmentSnapshot} from 'test/server/testUtils';
 
 // Valid manifest url.
 const manifestEndpoint = '/manifest.json';
@@ -16,7 +17,8 @@ const READ_WIDGET = 'Read';
 const FULL_WIDGET = 'Full';
 const COLUMN_WIDGET = 'COLUMN_WIDGET';
 const REQUIRED_WIDGET = 'REQUIRED_WIDGET';
-// Custom URL label in selectbox.
+const INVALID_URL_WIDGET = 'INVALID_URL_WIDGET';
+// Custom URL label.
 const CUSTOM_URL = 'Custom URL';
 // Holds url for sample widget server.
 let widgetServerUrl = '';
@@ -27,14 +29,9 @@ function createConfigUrl(ready?: any) {
   return ready ? `${widgetServerUrl}/config?ready=` + encodeURI(JSON.stringify(ready)) : `${widgetServerUrl}/config`;
 }
 
-// Open or close widget menu.
 const click = (selector: string) => driver.find(`${selector}`).click();
 const toggleDrop = (selector: string) => click(`${selector} .test-select-open`);
-const toggleWidgetMenu = () => toggleDrop('.test-config-widget-select');
 const getOptions = () => driver.findAll('.test-select-menu li', el => el.getText());
-// Get current value from widget menu.
-const currentWidget = () => driver.find('.test-config-widget-select .test-select-open').getText();
-// Select widget from the menu.
 const clickOption = async (text: string | RegExp) => {
   await driver.findContent('.test-select-menu li', text).click();
   await gu.waitForServer();
@@ -58,13 +55,11 @@ async function getListItems(col: string) {
     .findAll(`.test-config-widget-map-list-for-${col} .test-config-widget-ref-select-label`, el => el.getText());
 }
 
-// When refreshing, we need to make sure widget repository is enabled once again.
 async function refresh() {
   await driver.navigate().refresh();
   await gu.waitForDocToLoad();
   // Switch section and enable config
   await gu.selectSectionByTitle('Table');
-  await driver.executeScript('window.gristConfig.enableWidgetRepository = true;');
   await gu.selectSectionByTitle('Widget');
 }
 
@@ -130,6 +125,7 @@ describe('CustomWidgetsConfig', function () {
   let mainSession: gu.Session;
   gu.bigScreen();
 
+  let oldEnv: EnvironmentSnapshot;
 
   addToRepl('getOptions', getOptions);
 
@@ -137,6 +133,12 @@ describe('CustomWidgetsConfig', function () {
     if (server.isExternalServer()) {
       this.skip();
     }
+
+    oldEnv = new EnvironmentSnapshot();
+    // Set to an unused URL so that the client reports that widgets are available.
+    process.env.GRIST_WIDGET_LIST_URL = 'unused';
+    await server.restart();
+
     // Create simple widget server that serves manifest.json file, some widgets and some error pages.
     const widgetServer = await serveSomething(app => {
       app.get('/manifest.json', (_, res) => {
@@ -177,6 +179,11 @@ describe('CustomWidgetsConfig', function () {
             url: createConfigUrl({requiredAccess: AccessLevel.read_table, columns: [{name:'Column', optional: false}]}),
             widgetId: 'tester6',
           },
+          {
+            name: INVALID_URL_WIDGET,
+            url: 'ftp://getgrist.com/path',
+            widgetId: 'tester7'
+          }
         ]);
       });
       addStatic(app);
@@ -188,25 +195,23 @@ describe('CustomWidgetsConfig', function () {
     mainSession = await gu.session().login();
     const doc = await mainSession.tempDoc(cleanup, 'CustomWidget.grist');
     docId = doc.id;
-    // Make sure widgets are enabled.
-    await driver.executeScript('window.gristConfig.enableWidgetRepository = true;');
     await gu.toggleSidePanel('right', 'open');
     await gu.selectSectionByTitle('Widget');
   });
 
   after(async function() {
     await server.testingHooks.setWidgetRepositoryUrl('');
+    oldEnv.restore();
+    await server.restart();
   });
 
   beforeEach(async () => {
     // Before each test, we will switch to Custom Url (to cleanup the widget)
     // and then back to the Tester widget.
-    if ((await currentWidget()) !== CUSTOM_URL) {
-      await toggleWidgetMenu();
-      await clickOption(CUSTOM_URL);
+    if ((await gu.getCustomWidgetName()) !== CUSTOM_URL) {
+      await gu.setCustomWidget(CUSTOM_URL);
     }
-    await toggleWidgetMenu();
-    await clickOption(TESTER_WIDGET);
+    await gu.setCustomWidget(TESTER_WIDGET);
     await widget.waitForFrame();
   });
 
@@ -218,8 +223,7 @@ describe('CustomWidgetsConfig', function () {
     assert.isFalse(await driver.find('.test-custom-widget-ready').isPresent());
 
     // Now select the widget that requires a column.
-    await toggleWidgetMenu();
-    await clickOption(REQUIRED_WIDGET);
+    await gu.setCustomWidget(REQUIRED_WIDGET);
     await gu.acceptAccessRequest();
 
     // The widget iframe should be covered with a text explaining that the widget is not configured.
@@ -251,15 +255,11 @@ describe('CustomWidgetsConfig', function () {
   });
 
   it('should hide mappings when there is no good column', async () => {
-    if ((await currentWidget()) !== CUSTOM_URL) {
-      await toggleWidgetMenu();
-      await clickOption(CUSTOM_URL);
-    }
-    await gu.setWidgetUrl(
+    await gu.setCustomWidgetUrl(
       createConfigUrl({
         columns: [{name: 'M2', type: 'Date', optional: true}],
         requiredAccess: 'read table',
-      })
+      }),
     );
 
     await widget.waitForFrame();
@@ -307,11 +307,7 @@ describe('CustomWidgetsConfig', function () {
 
   it('should clear optional mapping', async () => {
     const revert = await gu.begin();
-    if ((await currentWidget()) !== CUSTOM_URL) {
-      await toggleWidgetMenu();
-      await clickOption(CUSTOM_URL);
-    }
-    await gu.setWidgetUrl(
+    await gu.setCustomWidgetUrl(
       createConfigUrl({
         columns: [{name: 'M2', type: 'Date', optional: true}],
         requiredAccess: 'read table',
@@ -356,9 +352,7 @@ describe('CustomWidgetsConfig', function () {
   it('should render columns mapping', async () => {
     const revert = await gu.begin();
     assert.isTrue(await driver.find('.test-vfc-visible-fields-select-all').isPresent());
-    await toggleWidgetMenu();
-    // Select widget that has single column configuration.
-    await clickOption(COLUMN_WIDGET);
+    await gu.setCustomWidget(COLUMN_WIDGET);
     await widget.waitForFrame();
     await gu.acceptAccessRequest();
     await widget.waitForPendingRequests();
@@ -386,11 +380,9 @@ describe('CustomWidgetsConfig', function () {
 
   it('should render multiple mappings', async () => {
     const revert = await gu.begin();
-    await toggleWidgetMenu();
-    await clickOption(CUSTOM_URL);
     // This is not standard way of creating widgets. The widgets in this test is reading this parameter
     // and is using it to invoke the ready method.
-    await gu.setWidgetUrl(
+    await gu.setCustomWidgetUrl(
       createConfigUrl({
         columns: ['M1', {name: 'M2', optional: true}, {name: 'M3', title: 'T3'}, {name: 'M4', type: 'Text'}],
         requiredAccess: 'read table',
@@ -448,8 +440,7 @@ describe('CustomWidgetsConfig', function () {
   it('should clear mappings on widget switch', async () => {
     const revert = await gu.begin();
 
-    await toggleWidgetMenu();
-    await clickOption(COLUMN_WIDGET);
+    await gu.setCustomWidget(COLUMN_WIDGET);
     await widget.waitForFrame();
     await gu.acceptAccessRequest();
     await widget.waitForPendingRequests();
@@ -466,8 +457,7 @@ describe('CustomWidgetsConfig', function () {
     await clickOption('A');
 
     // Now change to a widget without columns
-    await toggleWidgetMenu();
-    await clickOption(NORMAL_WIDGET);
+    await gu.setCustomWidget(NORMAL_WIDGET);
 
     // Picker should disappear and column mappings should be visible
     assert.isTrue(await driver.find('.test-vfc-visible-fields-select-all').isPresent());
@@ -481,8 +471,7 @@ describe('CustomWidgetsConfig', function () {
       {id: 3, A: 'C'},
     ]);
     // Now go back to the widget with mappings.
-    await toggleWidgetMenu();
-    await clickOption(COLUMN_WIDGET);
+    await gu.setCustomWidget(COLUMN_WIDGET);
     await widget.waitForFrame();
     await gu.acceptAccessRequest();
     await widget.waitForPendingRequests();
@@ -494,9 +483,7 @@ describe('CustomWidgetsConfig', function () {
 
   it('should render multiple options', async () => {
     const revert = await gu.begin();
-    await toggleWidgetMenu();
-    await clickOption(CUSTOM_URL);
-    await gu.setWidgetUrl(
+    await gu.setCustomWidgetUrl(
       createConfigUrl({
         columns: [
           {name: 'M1', allowMultiple: true, optional: true},
@@ -578,9 +565,7 @@ describe('CustomWidgetsConfig', function () {
 
   it('should support multiple types in mappings', async () => {
     const revert = await gu.begin();
-    await toggleWidgetMenu();
-    await clickOption(CUSTOM_URL);
-    await gu.setWidgetUrl(
+    await gu.setCustomWidgetUrl(
       createConfigUrl({
         columns: [
           {name: 'M1', type: 'Date,DateTime', optional: true},
@@ -639,9 +624,7 @@ describe('CustomWidgetsConfig', function () {
 
   it('should support strictType setting', async () => {
     const revert = await gu.begin();
-    await toggleWidgetMenu();
-    await clickOption(CUSTOM_URL);
-    await gu.setWidgetUrl(
+    await gu.setCustomWidgetUrl(
       createConfigUrl({
         columns: [
           {name: 'Any', type: 'Any', strictType: true, optional: true},
@@ -683,9 +666,7 @@ describe('CustomWidgetsConfig', function () {
 
   it('should react to widget options change', async () => {
     const revert = await gu.begin();
-    await toggleWidgetMenu();
-    await clickOption(CUSTOM_URL);
-    await gu.setWidgetUrl(
+    await gu.setCustomWidgetUrl(
       createConfigUrl({
         columns: [
           {name: 'Choice', type: 'Choice', strictType: true, optional: true},
@@ -731,10 +712,8 @@ describe('CustomWidgetsConfig', function () {
 
   it('should remove mapping when column is deleted', async () => {
     const revert = await gu.begin();
-    await toggleWidgetMenu();
     // Prepare mappings for single and multiple columns
-    await clickOption(CUSTOM_URL);
-    await gu.setWidgetUrl(
+    await gu.setCustomWidgetUrl(
       createConfigUrl({
         columns: [{name: 'M1', optional: true}, {name: 'M2', allowMultiple: true, optional: true}],
         requiredAccess: 'read table',
@@ -820,10 +799,8 @@ describe('CustomWidgetsConfig', function () {
 
   it('should remove mapping when column type is changed', async () => {
     const revert = await gu.begin();
-    await toggleWidgetMenu();
     // Prepare mappings for single and multiple columns
-    await clickOption(CUSTOM_URL);
-    await gu.setWidgetUrl(
+    await gu.setCustomWidgetUrl(
       createConfigUrl({
         columns: [
           {name: 'M1', type: 'Text', optional: true},
@@ -900,10 +877,9 @@ describe('CustomWidgetsConfig', function () {
     await gu.undo();
 
     // Add Custom - no section option by default
-    await gu.addNewSection(/Custom/, /Table1/);
+    await gu.addNewSection(/Custom/, /Table1/, {customWidget: /Custom URL/});
     assert.isFalse(await hasSectionOption());
-    await toggleWidgetMenu();
-    await clickOption(TESTER_WIDGET);
+    await gu.setCustomWidget(TESTER_WIDGET);
     assert.isTrue(await hasSectionOption());
     await gu.undo(2);
   });
@@ -1058,30 +1034,19 @@ describe('CustomWidgetsConfig', function () {
 
   it('should show options action button', async () => {
     // Select widget without options
-    await toggleWidgetMenu();
-    await clickOption(NORMAL_WIDGET);
+    await gu.setCustomWidget(NORMAL_WIDGET);
     assert.isFalse(await hasSectionOption());
     // Select widget with options
-    await toggleWidgetMenu();
-    await clickOption(TESTER_WIDGET);
+    await gu.setCustomWidget(TESTER_WIDGET);
     assert.isTrue(await hasSectionOption());
     // Select widget without options
-    await toggleWidgetMenu();
-    await clickOption(NORMAL_WIDGET);
+    await gu.setCustomWidget(NORMAL_WIDGET);
     assert.isFalse(await hasSectionOption());
   });
 
   it('should prompt user for correct access level', async () => {
-    // Select widget without request
-    await toggleWidgetMenu();
-    await clickOption(NORMAL_WIDGET);
-    await widget.waitForFrame();
-    assert.isFalse(await gu.hasAccessPrompt());
-    assert.equal(await gu.widgetAccess(), AccessLevel.none);
-    assert.equal(await widget.access(), AccessLevel.none);
     // Select widget that requests read access.
-    await toggleWidgetMenu();
-    await clickOption(READ_WIDGET);
+    await gu.setCustomWidget(READ_WIDGET);
     await widget.waitForFrame();
     assert.isTrue(await gu.hasAccessPrompt());
     assert.equal(await gu.widgetAccess(), AccessLevel.none);
@@ -1091,8 +1056,7 @@ describe('CustomWidgetsConfig', function () {
     assert.equal(await gu.widgetAccess(), AccessLevel.read_table);
     assert.equal(await widget.access(), AccessLevel.read_table);
     // Select widget that requests full access.
-    await toggleWidgetMenu();
-    await clickOption(FULL_WIDGET);
+    await gu.setCustomWidget(FULL_WIDGET);
     await widget.waitForFrame();
     assert.isTrue(await gu.hasAccessPrompt());
     assert.equal(await gu.widgetAccess(), AccessLevel.none);
@@ -1101,7 +1065,7 @@ describe('CustomWidgetsConfig', function () {
     await widget.waitForPendingRequests();
     assert.equal(await gu.widgetAccess(), AccessLevel.full);
     assert.equal(await widget.access(), AccessLevel.full);
-    await gu.undo(5);
+    await gu.undo(4);
   });
 
   it('should pass readonly mode to custom widget', async () => {
@@ -1118,6 +1082,12 @@ describe('CustomWidgetsConfig', function () {
     await mainSession.login();
     await mainSession.loadDoc(`/doc/${docId}`);
     await refresh();
+  });
+
+  it('should display the empty widget page if the URL is invalid', async function () {
+    await gu.setCustomWidget(INVALID_URL_WIDGET);
+    await widget.waitForFrame();
+    assert.match(await widget.url(), /custom-widget\.html$/);
   });
 });
 
@@ -1136,6 +1106,9 @@ const widget = {
     await this._inWidgetIframe(async () => {
       await driver.executeScript('grist.testWaitForPendingRequests();');
     });
+  },
+  async url() {
+    return await driver.find('iframe').getAttribute('src');
   },
   async content() {
     return await this._read('body');
@@ -1265,7 +1238,6 @@ const widget = {
    * any existing widget state (even if the Custom URL was already selected).
    */
   async resetWidget() {
-    await toggleWidgetMenu();
-    await clickOption(CUSTOM_URL);
+    await gu.setCustomWidget(CUSTOM_URL);
   }
 };

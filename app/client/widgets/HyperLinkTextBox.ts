@@ -1,8 +1,9 @@
+import { sanitizeLinkUrl } from 'app/client/lib/sanitizeUrl';
 import { DataRowModel } from 'app/client/models/DataRowModel';
 import { ViewFieldRec } from 'app/client/models/entities/ViewFieldRec';
 import { constructUrl } from 'app/client/models/gristUrlState';
 import { testId, theme } from 'app/client/ui2018/cssVars';
-import { cssIconBackground, icon } from 'app/client/ui2018/icons';
+import { cssIconSpanBackground, iconSpan } from 'app/client/ui2018/icons';
 import { cssHoverIn, gristLink } from 'app/client/ui2018/links';
 import { NTextBox } from 'app/client/widgets/NTextBox';
 import { CellValue } from 'app/common/DocActions';
@@ -20,15 +21,18 @@ export class HyperLinkTextBox extends NTextBox {
 
   public buildDom(row: DataRowModel) {
     const value = row.cells[this.field.colId()];
-    const url = Computed.create(null, (use) => constructUrl(use(value)));
+    const url = Computed.create(
+      null,
+      (use) => sanitizeLinkUrl(constructUrl(use(value))) ?? "about:blank"
+    );
     return cssFieldClip(
       dom.autoDispose(url),
       dom.style('text-align', this.alignment),
       dom.cls('text_wrapping', this.wrapping),
       dom.maybe((use) => Boolean(use(value)), () =>
         gristLink(url,
-          cssIconBackground(
-            icon("FieldLink", testId('tb-link-icon')),
+          cssIconSpanBackground(
+            iconSpan("FieldLink", testId('tb-link-icon')),
             dom.cls(cssHoverOnField.className),
           ),
           testId('tb-link'),

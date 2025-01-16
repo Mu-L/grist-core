@@ -34,6 +34,7 @@ describe('WebhookOverflow', function () {
       enabled: true,
       name: 'test webhook',
       tableId: 'Table2',
+      watchedColIds: []
     };
     await docApi.addWebhook(webhookDetails);
     await docApi.addWebhook(webhookDetails);
@@ -108,7 +109,7 @@ describe('WebhookOverflow', function () {
 
 async function openWebhookPageWithoutWaitForServer() {
   await openDocumentSettings();
-  const button = await driver.findContentWait('a', /Manage Webhooks/, 3000);
+  const button = await driver.findContentWait('a', /Manage Webhooks/i, 3000);
   await gu.scrollIntoView(button).click();
   await waitForWebhookPage();
 }
@@ -116,7 +117,9 @@ async function openWebhookPageWithoutWaitForServer() {
 async function waitForWebhookPage() {
   await driver.findContentWait('button', /Clear Queue/, 3000);
   // No section, so no easy utility for setting focus. Click on a random cell.
-  await gu.getDetailCell({col: 'Webhook Id', rowNum: 1}).click();
+  await gu.waitToPass(async () => {
+    await gu.getDetailCell({col: 'Webhook Id', rowNum: 1}).click();
+  });
 }
 
 export async function openAccountMenu() {

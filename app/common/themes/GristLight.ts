@@ -85,6 +85,7 @@ export const GristLight: ThemeColors = {
 
   /* Popups */
   'popup-bg': 'white',
+  'popup-secondary-bg': '#F7F7F7',
   'popup-shadow-inner': 'rgba(31, 37, 50, 0.31)',
   'popup-shadow-outer': 'rgba(76, 86, 103, 0.24)',
   'popup-close-button-fg': '#929299',
@@ -228,13 +229,16 @@ export const GristLight: ThemeColors = {
   'left-panel-page-emoji-outline': '#BDBDBD',
 
   /* Right Panel */
-  'right-panel-tab-fg': '#262633',
-  'right-panel-tab-bg': '#F7F7F7',
+  'right-panel-tab-fg': '#929299',
+  'right-panel-tab-bg': 'white',
   'right-panel-tab-icon': '#929299',
-  'right-panel-tab-icon-hover': '#16B378',
-  'right-panel-tab-hover-bg': 'rgba(217,217,217,0.6)',
-  'right-panel-tab-selected-fg': '#FFFFFF',
-  'right-panel-tab-selected-bg': '#16B378',
+  'right-panel-tab-icon-hover': '#262633',
+  'right-panel-tab-border': 'rgba(217,217,217,0.6)',
+  'right-panel-tab-hover-bg': 'white',
+  'right-panel-tab-hover-fg': '#262633',
+  'right-panel-tab-selected-fg': '#262633',
+  'right-panel-tab-selected-bg': '#F7F7F7',
+  'right-panel-tab-selected-icon': '#16B378',
   'right-panel-tab-button-hover-bg': '#009058',
   'right-panel-subtab-fg': '#16B378',
   'right-panel-subtab-selected-fg': '#262633',
@@ -248,6 +252,8 @@ export const GristLight: ThemeColors = {
   'right-panel-toggle-button-disabled-bg': '#E8E8E8',
   'right-panel-field-settings-bg': '#E8E8E8',
   'right-panel-field-settings-button-bg': 'lightgrey',
+  'right-panel-custom-widget-button-fg': '#262633',
+  'right-panel-custom-widget-button-bg': '#D9D9D9',
 
   /* Document History */
   'document-history-snapshot-fg': '#262633',
@@ -551,4 +557,28 @@ export const GristLight: ThemeColors = {
 
   /* Numeric Spinners */
   'numeric-spinner-fg': '#606060',
+
+  /* Custom Widget Gallery */
+  'widget-gallery-border': '#D9D9D9',
+  'widget-gallery-border-selected': '#16B378',
+  'widget-gallery-shadow': '#0000001A',
+  'widget-gallery-bg-hover': '#F7F7F7',
+  'widget-gallery-secondary-header-fg': '#FFFFFF',
+  'widget-gallery-secondary-header-bg': '#929299',
+  'widget-gallery-secondary-header-bg-hover': '#7E7E85',
+
+  /* Markdown Cell */
+  'markdown-cell-light-bg': '#F7F7F7',
+  'markdown-cell-light-border': '#E8E8E8',
+  'markdown-cell-medium-border': '#D9D9D9',
+
+  /* App header */
+  'app-header-bg': 'var(--grist-theme-page-panels-main-panel-bg)',
+  'app-header-border': 'var(--grist-theme-menu-border)',
+  'app-header-border-hover': '#B0B0B0',
+
+  /* Card Button */
+  'card-button-border': '#D9D9D9',
+  'card-button-border-selected': '#16B378',
+  'card-button-shadow': '#0000001A',
 };

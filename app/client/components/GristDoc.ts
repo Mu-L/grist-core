@@ -14,6 +14,7 @@ import {DocComm} from 'app/client/components/DocComm';
 import * as DocConfigTab from 'app/client/components/DocConfigTab';
 import {Drafts} from "app/client/components/Drafts";
 import {EditorMonitor} from "app/client/components/EditorMonitor";
+import {buildDefaultFormLayout} from 'app/client/components/Forms/FormView';
 import GridView from 'app/client/components/GridView';
 import {importFromFile, selectAndImport} from 'app/client/components/Importer';
 import {RawDataPage, RawDataPopup} from 'app/client/components/RawDataPage';
@@ -41,6 +42,7 @@ import {getFilterFunc, QuerySetManager} from 'app/client/models/QuerySet';
 import TableModel from 'app/client/models/TableModel';
 import {getUserOrgPrefObs, getUserOrgPrefsObs, markAsSeen} from 'app/client/models/UserPrefs';
 import {App} from 'app/client/ui/App';
+import {showCustomWidgetGallery} from 'app/client/ui/CustomWidgetGallery';
 import {DocHistory} from 'app/client/ui/DocHistory';
 import {startDocTour} from "app/client/ui/DocTour";
 import {DocTutorial} from 'app/client/ui/DocTutorial';
@@ -48,6 +50,7 @@ import {DocSettingsPage} from 'app/client/ui/DocumentSettings';
 import {isTourActive, isTourActiveObs} from "app/client/ui/OnBoardingPopups";
 import {DefaultPageWidget, IPageWidget, toPageWidget} from 'app/client/ui/PageWidgetPicker';
 import {linkFromId, NoLink, selectBy} from 'app/client/ui/selectBy';
+import {TimingPage} from 'app/client/ui/TimingPage';
 import {WebhookPage} from 'app/client/ui/WebhookPage';
 import {startWelcomeTour} from 'app/client/ui/WelcomeTour';
 import {getTelemetryWidgetTypeFromPageWidget} from 'app/client/ui/widgetTypesMap';
@@ -136,6 +139,13 @@ interface PopupSectionOptions {
   close: () => void;
 }
 
+interface AddSectionOptions {
+  /** If focus should move to the new section. Defaults to `true`. */
+  focus?: boolean;
+  /** If popups should be shown (e.g. Card Layout tip). Defaults to `true`. */
+  popups?: boolean;
+}
+
 export class GristDoc extends DisposableWithEvents {
   public docModel: DocModel;
   public viewModel: ViewRec;
@@ -191,11 +201,21 @@ export class GristDoc extends DisposableWithEvents {
   // Holder for the popped up formula editor.
   public readonly formulaPopup = Holder.create(this);
 
-  public readonly currentTheme = this.docPageModel.appModel.currentTheme;
-
   public get docApi() {
     return this.docPageModel.appModel.api.getDocAPI(this.docPageModel.currentDocId.get()!);
   }
+
+  public isTimingOn = Observable.create(this, false);
+
+  /**
+   * Checks if it is ok to show raw data popup for currently selected section.
+   * We can't show raw data if:
+   * - we already have full screen section (which looks the same)
+   * - we are already showing raw data
+   *
+   * Extracted to single computed as it is used here and in menus.
+   */
+  public canShowRawData: Computed<boolean>;
 
   private _actionLog: ActionLog;
   private _undoStack: UndoStack;
@@ -229,6 +249,7 @@ export class GristDoc extends DisposableWithEvents {
   ) {
     super();
     console.log("RECEIVED DOC RESPONSE", openDocResponse);
+    this.isTimingOn.set(openDocResponse.isTimingOn);
     this.docData = new DocData(this.docComm, openDocResponse.doc);
     this.docModel = new DocModel(this.docData, this.docPageModel);
     this.querySetManager = QuerySetManager.create(this, this.docModel, this.docComm);
@@ -237,7 +258,6 @@ export class GristDoc extends DisposableWithEvents {
       untrustedContentOrigin: app.topAppModel.getUntrustedContentOrigin(),
       docComm: this.docComm,
       clientScope: app.clientScope,
-      theme: this.currentTheme,
     });
 
     // Maintain the MetaRowModel for the global document info, including docId and peers.
@@ -488,7 +508,21 @@ export class GristDoc extends DisposableWithEvents {
       reloadPlugins() {
         void this.docComm.reloadPlugins().then(() => G.window.location.reload(false));
       },
-
+      async showRawData(sectionId: number = 0) {
+        if (!this.canShowRawData.get()) {
+          return;
+        }
+        if (!sectionId) {
+          const viewSection = this.viewModel.activeSection();
+          if (viewSection?.isDisposed()) { return; }
+          if (viewSection.isRaw.peek()) {
+            return;
+          }
+          sectionId = viewSection.id.peek();
+        }
+        const anchorUrlState = { hash: { sectionId, popup: true } };
+        await urlState().pushUrl(anchorUrlState, { replace: true });
+      },
       // Command to be manually triggered on cell selection. Moves the cursor to the selected cell.
       // This is overridden by the formula editor to insert "$col" variables when clicking cells.
       setCursor: this.onSetCursorPos.bind(this),
@@ -593,6 +627,14 @@ export class GristDoc extends DisposableWithEvents {
         this._prevSectionId = null;
       }
     }));
+
+    this.canShowRawData = Computed.create(this, (use) => {
+      const isSinglePage = use(urlState().state).params?.style === 'singlePage';
+      if (isSinglePage || use(this.maximizedSectionId)) {
+        return false;
+      }
+      return true;
+    });
   }
 
   /**
@@ -613,15 +655,10 @@ export class GristDoc extends DisposableWithEvents {
    * Builds the DOM for this GristDoc.
    */
   public buildDom() {
-    const isMaximized = Computed.create(this, use => use(this.maximizedSectionId) !== null);
-    const isPopup = Computed.create(this, use => {
-      return ['data', 'settings'].includes(use(this.activeViewId) as any) // On Raw data or doc settings pages
-        || use(isMaximized) // Layout has a maximized section visible
-        || Boolean(use(this._popupSectionOptions)); // Layout has a popup section visible
-    });
     return cssViewContentPane(
       testId('gristdoc'),
-      cssViewContentPane.cls("-contents", isPopup),
+      cssViewContentPane.cls("-special-page", use =>
+        ['data', 'settings', 'code'].includes(use(this.activeViewId) as string)),
       dom.maybe(this._isRickRowing, () => cssStopRickRowingButton(
         cssCloseIcon('CrossBig'),
         dom.on('click', () => {
@@ -637,6 +674,7 @@ export class GristDoc extends DisposableWithEvents {
           content === 'data' ? dom.create(RawDataPage, this) :
           content === 'settings' ? dom.create(DocSettingsPage, this) :
           content === 'webhook' ? dom.create(WebhookPage, this) :
+          content === 'timing' ? dom.create(TimingPage, this) :
           content === 'GristDocTour' ? null :
           [
             dom.create((owner) => {
@@ -844,16 +882,20 @@ export class GristDoc extends DisposableWithEvents {
   }
 
   public onDocChatter(message: CommDocChatter) {
-    if (!this.docComm.isActionFromThisDoc(message) ||
-      !message.data.webhooks) {
+    if (!this.docComm.isActionFromThisDoc(message)) {
       return;
     }
-    if (message.data.webhooks.type == 'webhookOverflowError') {
-      this.trigger('webhookOverflowError',
-        t('New changes are temporarily suspended. Webhooks queue overflowed.' +
-          ' Please check webhooks settings, remove invalid webhooks, and clean the queue.'),);
-    } else {
-      this.trigger('webhooks', message.data.webhooks);
+
+    if (message.data.webhooks) {
+      if (message.data.webhooks.type == 'webhookOverflowError') {
+        this.trigger('webhookOverflowError',
+          t('New changes are temporarily suspended. Webhooks queue overflowed.' +
+            ' Please check webhooks settings, remove invalid webhooks, and clean the queue.'),);
+      } else {
+        this.trigger('webhooks', message.data.webhooks);
+      }
+    } else if (message.data.timing) {
+      this.isTimingOn.set(message.data.timing.status !== 'disabled');
     }
   }
 
@@ -887,38 +929,27 @@ export class GristDoc extends DisposableWithEvents {
   /**
    * Adds a view section described by val to the current page.
    */
-  public async addWidgetToPage(val: IPageWidget) {
-    const docData = this.docModel.docData;
-    const viewName = this.viewModel.name.peek();
+  public async addWidgetToPage(widget: IPageWidget) {
+    const {table, type} = widget;
     let tableId: string | null | undefined;
-    if (val.table === 'New Table') {
+    if (table === 'New Table') {
       tableId = await this._promptForName();
       if (tableId === undefined) {
         return;
       }
     }
-
-    const widgetType = getTelemetryWidgetTypeFromPageWidget(val);
-    logTelemetryEvent('addedWidget', {full: {docIdDigest: this.docId(), widgetType}});
-    if (val.link !== NoLink) {
-      logTelemetryEvent('linkedWidget', {full: {docIdDigest: this.docId(), widgetType}});
+    if (type === 'custom') {
+      return showCustomWidgetGallery(this, {
+        addWidget: () => this._addWidgetToPage(widget, tableId),
+      });
     }
 
-    const res: {sectionRef: number} = await docData.bundleActions(
+    const viewName = this.viewModel.name.peek();
+    const {sectionRef} = await this.docData.bundleActions(
       t("Added new linked section to view {{viewName}}", {viewName}),
-      () => this.addWidgetToPageImpl(val, tableId ?? null)
+      () => this._addWidgetToPage(widget, tableId ?? null)
     );
-
-    // The newly-added section should be given focus.
-    this.viewModel.activeSectionId(res.sectionRef);
-
-    this._maybeShowEditCardLayoutTip(val.type).catch(reportError);
-
-    if (AttachedCustomWidgets.guard(val.type)) {
-      this._handleNewAttachedCustomWidget(val.type).catch(reportError);
-    }
-
-    return res.sectionRef;
+    return sectionRef;
   }
 
   public async onCreateForm() {
@@ -935,70 +966,30 @@ export class GristDoc extends DisposableWithEvents {
   }
 
   /**
-   * The actual implementation of addWidgetToPage
-   */
-  public async addWidgetToPageImpl(val: IPageWidget, tableId: string | null = null) {
-    const viewRef = this.activeViewId.get();
-    const tableRef = val.table === 'New Table' ? 0 : val.table;
-    const result = await this.docData.sendAction(
-      ['CreateViewSection', tableRef, viewRef, val.type, val.summarize ? val.columns : null, tableId]
-    );
-    if (val.type === 'chart') {
-      await this._ensureOneNumericSeries(result.sectionRef);
-    }
-    await this.saveLink(val.link, result.sectionRef);
-    return result;
-  }
-
-  /**
    * Adds a new page (aka: view) with a single view section (aka: page widget) described by `val`.
    */
   public async addNewPage(val: IPageWidget) {
-    logTelemetryEvent('addedPage', {full: {docIdDigest: this.docId()}});
-    logTelemetryEvent('addedWidget', {
-      full: {
-        docIdDigest: this.docId(),
-        widgetType: getTelemetryWidgetTypeFromPageWidget(val),
-      },
-    });
-
-    if (val.table === 'New Table') {
-      const name = await this._promptForName();
-      if (name === undefined) {
-        return;
-      }
-      let newViewId: IDocPage;
-      if (val.type === WidgetType.Table) {
-        const result = await this.docData.sendAction(['AddEmptyTable', name]);
-        newViewId = result.views[0].id;
-      } else {
-        // This will create a new table and page.
-        const result = await this.docData.sendAction(
-          ['CreateViewSection', /* new table */0, 0, val.type, null, name]
-        );
-        newViewId = result.viewRef;
-      }
-      await this.openDocPage(newViewId);
-    } else {
-      let result: any;
-      await this.docData.bundleActions(`Add new page`, async () => {
-        result = await this.docData.sendAction(
-          ['CreateViewSection', val.table, 0, val.type, val.summarize ? val.columns : null, null]
-        );
-        if (val.type === 'chart') {
-          await this._ensureOneNumericSeries(result.sectionRef);
-        }
-      });
-      await this.openDocPage(result.viewRef);
-      // The newly-added section should be given focus.
-      this.viewModel.activeSectionId(result.sectionRef);
-
-      this._maybeShowEditCardLayoutTip(val.type).catch(reportError);
-
-      if (AttachedCustomWidgets.guard(val.type)) {
-        this._handleNewAttachedCustomWidget(val.type).catch(reportError);
-      }
+    const {table, type} = val;
+    let tableId: string | null | undefined;
+    if (table === 'New Table') {
+      tableId = await this._promptForName();
+      if (tableId === undefined) { return; }
     }
+    if (type === 'custom') {
+      return showCustomWidgetGallery(this, {
+        addWidget: () => this._addPage(val, tableId ?? null) as Promise<{
+          viewRef: number;
+          sectionRef: number;
+        }>,
+      });
+    }
+
+    const {sectionRef, viewRef} = await this.docData.bundleActions(
+      'Add new page',
+      () => this._addPage(val, tableId ?? null)
+    );
+    await this._focus({sectionRef, viewRef});
+    this._showNewWidgetPopups(type);
   }
 
   /**
@@ -1222,6 +1213,16 @@ export class GristDoc extends DisposableWithEvents {
     return this.docPageModel.appModel.api.getDocAPI(this.docId()).getDownloadCsvUrl(params);
   }
 
+  public getTsvLink() {
+    const params = this._getDocApiDownloadParams();
+    return this.docPageModel.appModel.api.getDocAPI(this.docId()).getDownloadTsvUrl(params);
+  }
+
+  public getDsvLink() {
+    const params = this._getDocApiDownloadParams();
+    return this.docPageModel.appModel.api.getDocAPI(this.docId()).getDownloadDsvUrl(params);
+  }
+
   public getXlsxActiveViewLink() {
     const params = this._getDocApiDownloadParams();
     return this.docPageModel.appModel.api.getDocAPI(this.docId()).getDownloadXlsxUrl(params);
@@ -1415,6 +1416,8 @@ export class GristDoc extends DisposableWithEvents {
     const toggle = () => !refreshed.isDisposed() && refreshed.set(refreshed.get() + 1);
     const holder = Holder.create(owner);
     const listener = (tab: TableModel) => {
+      if (tab.tableData.tableId === '') { return; }
+
       // Now subscribe to any data change in that table.
       const subs = MultiHolder.create(holder);
       subs.autoDispose(tab.tableData.dataLoadedEmitter.addListener(toggle));
@@ -1430,6 +1433,90 @@ export class GristDoc extends DisposableWithEvents {
       return rows.map((row, i) => [row, colValues[i]]);
     });
     return values;
+  }
+
+  private async _addWidgetToPage(
+    widget: IPageWidget,
+    tableId: string | null = null,
+    {focus = true, popups = true}: AddSectionOptions= {}
+  ) {
+    const {columns, link, summarize, table, type} = widget;
+    const viewRef = this.activeViewId.get();
+    const tableRef = table === 'New Table' ? 0 : table;
+    const result: {viewRef: number, sectionRef: number} = await this.docData.sendAction(
+      ['CreateViewSection', tableRef, viewRef, type, summarize ? columns : null, tableId]
+    );
+    if (type === 'chart') {
+      await this._ensureOneNumericSeries(result.sectionRef);
+    }
+    if (type === 'form') {
+      await this._setDefaultFormLayoutSpec(result.sectionRef);
+    }
+    await this.saveLink(link, result.sectionRef);
+    const widgetType = getTelemetryWidgetTypeFromPageWidget(widget);
+    logTelemetryEvent('addedWidget', {full: {docIdDigest: this.docId(), widgetType}});
+    if (link !== NoLink) {
+      logTelemetryEvent('linkedWidget', {full: {docIdDigest: this.docId(), widgetType}});
+    }
+    if (focus) { await this._focus({sectionRef: result.sectionRef}); }
+    if (popups) { this._showNewWidgetPopups(type); }
+    return result;
+  }
+
+  private async _addPage(
+    widget: IPageWidget,
+    tableId: string | null = null,
+    {focus = true, popups = true}: AddSectionOptions = {}
+  ) {
+    const {columns, summarize, table, type} = widget;
+    let viewRef: number;
+    let sectionRef: number | undefined;
+    if (table === 'New Table') {
+      if (type === WidgetType.Table) {
+        const result = await this.docData.sendAction(['AddEmptyTable', tableId]);
+        viewRef = result.views[0].id;
+      } else {
+        // This will create a new table and page.
+        const result = await this.docData.sendAction(
+          ['CreateViewSection', 0, 0, type, null, tableId]
+        );
+        [viewRef, sectionRef] = [result.viewRef, result.sectionRef];
+      }
+    } else {
+      const result = await this.docData.sendAction(
+        ['CreateViewSection', table, 0, type, summarize ? columns : null, null]
+      );
+      [viewRef, sectionRef] = [result.viewRef, result.sectionRef];
+      if (type === 'chart') {
+        await this._ensureOneNumericSeries(sectionRef!);
+      }
+    }
+    if (type === 'form') {
+      await this._setDefaultFormLayoutSpec(sectionRef!);
+    }
+    logTelemetryEvent('addedPage', {full: {docIdDigest: this.docId()}});
+    logTelemetryEvent('addedWidget', {
+      full: {
+        docIdDigest: this.docId(),
+        widgetType: getTelemetryWidgetTypeFromPageWidget(widget),
+      },
+    });
+    if (focus) { await this._focus({viewRef, sectionRef}); }
+    if (popups) { this._showNewWidgetPopups(type); }
+    return {viewRef, sectionRef};
+  }
+
+  private async _focus({viewRef, sectionRef}: {viewRef?: number, sectionRef?: number}) {
+    if (viewRef) { await this.openDocPage(viewRef); }
+    if (sectionRef) { this.viewModel.activeSectionId(sectionRef); }
+  }
+
+  private _showNewWidgetPopups(type: IWidgetType) {
+    this._maybeShowEditCardLayoutTip(type).catch(reportError);
+
+    if (AttachedCustomWidgets.guard(type)) {
+      this._handleNewAttachedCustomWidget(type).catch(reportError);
+    }
   }
 
   /**
@@ -1690,7 +1777,7 @@ export class GristDoc extends DisposableWithEvents {
     const sectionId = section.id();
 
     // create a new section
-    const sectionCreationResult = await this.addWidgetToPageImpl(newVal);
+    const sectionCreationResult = await this._addWidgetToPage(newVal, null, {focus: false, popups: false});
 
     // update section name
     const newSection: ViewSectionRec = docModel.viewSections.getRowModel(sectionCreationResult.sectionRef);
@@ -1911,6 +1998,12 @@ export class GristDoc extends DisposableWithEvents {
     }
   }
 
+  private async _setDefaultFormLayoutSpec(viewSectionId: number) {
+    const viewSection = this.docModel.viewSections.getRowModel(viewSectionId);
+    const viewFields = viewSection.viewFields.peek().peek();
+    await viewSection.layoutSpecObj.setAndSave(buildDefaultFormLayout(viewFields));
+  }
+
   private _handleTriggerQueueOverflowMessage() {
     this.listenTo(this, 'webhookOverflowError', (err: any) => {
       this.app.topAppModel.notifier.createNotification({
@@ -1954,8 +2047,9 @@ const cssViewContentPane = styled('div', `
       padding: 0px;
     }
   }
-  &-contents {
+  &-special-page {
     overflow: hidden;
+    padding: 0px;
   }
 `);
 

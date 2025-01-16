@@ -12,7 +12,13 @@ import {
   UserAction
 } from 'app/common/DocActions';
 import {DocData} from 'app/common/DocData';
-import {extractTypeFromColType, isFullReferencingType, isRaisedException} from "app/common/gristTypes";
+import {
+  extractTypeFromColType,
+  getReferencedTableId,
+  isBlankValue,
+  isFullReferencingType,
+  isRaisedException,
+} from "app/common/gristTypes";
 import {INITIAL_FIELDS_COUNT} from "app/common/Forms";
 import {buildUrlId, parseUrlId, SHARE_KEY_PREFIX} from "app/common/gristUrls";
 import {isAffirmative, safeJsonParse, timeoutReached} from "app/common/gutil";
@@ -20,11 +26,13 @@ import {SchemaTypes} from "app/common/schema";
 import {SortFunc} from 'app/common/SortFunc';
 import {Sort} from 'app/common/SortSpec';
 import {MetaRowRecord} from 'app/common/TableData';
-import {TelemetryMetadataByLevel} from "app/common/Telemetry";
 import {WebhookFields} from "app/common/Triggers";
 import TriggersTI from 'app/common/Triggers-ti';
 import {DocReplacementOptions, DocState, DocStateComparison, DocStates, NEW_DOCUMENT_CODE} from 'app/common/UserAPI';
-import {HomeDBManager, makeDocAuthResult} from 'app/gen-server/lib/HomeDBManager';
+import {Document} from "app/gen-server/entity/Document";
+import {Workspace} from "app/gen-server/entity/Workspace";
+import {HomeDBManager, makeDocAuthResult} from 'app/gen-server/lib/homedb/HomeDBManager';
+import {QueryResult} from 'app/gen-server/lib/homedb/Interfaces';
 import * as Types from "app/plugin/DocApiTypes";
 import DocApiTypesTI from "app/plugin/DocApiTypes-ti";
 import {GristObjCode} from "app/plugin/GristData";
@@ -38,6 +46,8 @@ import {
 import {ActiveDoc, colIdToRef as colIdToReference, getRealTableId, tableIdToRef} from "app/server/lib/ActiveDoc";
 import {appSettings} from "app/server/lib/AppSettings";
 import {sendForCompletion} from 'app/server/lib/Assistance';
+import {getDocPoolIdFromDocInfo} from 'app/server/lib/AttachmentStore';
+import {IAttachmentStoreProvider} from 'app/server/lib/AttachmentStoreProvider';
 import {
   assertAccess,
   getAuthorizedUserId,
@@ -48,12 +58,15 @@ import {
   RequestWithLogin
 } from 'app/server/lib/Authorizer';
 import {DocManager} from "app/server/lib/DocManager";
-import {docSessionFromRequest, getDocSessionShare, makeExceptionalDocSession,
-        OptDocSession} from "app/server/lib/DocSession";
+import {
+  docSessionFromRequest,
+  makeExceptionalDocSession,
+  OptDocSession,
+} from "app/server/lib/DocSession";
 import {DocWorker} from "app/server/lib/DocWorker";
 import {IDocWorkerMap} from "app/server/lib/DocWorkerMap";
 import {DownloadOptions, parseExportParameters} from "app/server/lib/Export";
-import {downloadCSV} from "app/server/lib/ExportCSV";
+import {downloadDSV} from "app/server/lib/ExportDSV";
 import {collectTableSchemaInFrictionlessFormat} from "app/server/lib/ExportTableSchema";
 import {streamXLSX} from "app/server/lib/ExportXLSX";
 import {expressWrap} from 'app/server/lib/expressWrap';
@@ -79,6 +92,7 @@ import {
 } from 'app/server/lib/requestUtils';
 import {ServerColumnGetters} from 'app/server/lib/ServerColumnGetters';
 import {localeFromRequest} from "app/server/lib/ServerLocale";
+import {getDocSessionShare} from "app/server/lib/sessionUtils";
 import {isUrlAllowed, WebhookAction, WebHookSecret} from "app/server/lib/Triggers";
 import {fetchDoc, globalUploadSet, handleOptionalUpload, handleUpload,
         makeAccessId} from "app/server/lib/uploads";
@@ -92,8 +106,7 @@ import fetch from 'node-fetch';
 import * as path from 'path';
 import * as t from "ts-interface-checker";
 import {Checker} from "ts-interface-checker";
-import uuidv4 from "uuid/v4";
-import { Document } from "app/gen-server/entity/Document";
+import {v4 as uuidv4} from "uuid";
 
 // Cap on the number of requests that can be outstanding on a single document via the
 // rest doc api.  When this limit is exceeded, incoming requests receive an immediate
@@ -168,7 +181,8 @@ export class DocWorkerApi {
 
   constructor(private _app: Application, private _docWorker: DocWorker,
               private _docWorkerMap: IDocWorkerMap, private _docManager: DocManager,
-              private _dbManager: HomeDBManager, private _grist: GristServer) {}
+              private _dbManager: HomeDBManager, private _attachmentStoreProvider: IAttachmentStoreProvider,
+              private _grist: GristServer) {}
 
   /**
    * Adds endpoints for the doc api.
@@ -260,9 +274,15 @@ export class DocWorkerApi {
     }
 
     function asRecords(
-      columnData: TableColValues, opts?: { optTableId?: string; includeHidden?: boolean }): TableRecordValue[] {
+      columnData: TableColValues,
+      opts?: {
+        optTableId?: string;
+        includeHidden?: boolean;
+        includeId?: boolean;
+      }
+    ): TableRecordValue[] {
       const fieldNames = Object.keys(columnData).filter((k) => {
-        if (k === "id") {
+        if (!opts?.includeId && k === "id") {
           return false;
         }
         if (
@@ -312,7 +332,7 @@ export class DocWorkerApi {
     );
 
     const registerWebhook = async (activeDoc: ActiveDoc, req: RequestWithLogin, webhook: WebhookFields) => {
-      const {fields, url} = await getWebhookSettings(activeDoc, req, null, webhook);
+      const {fields, url, authorization} = await getWebhookSettings(activeDoc, req, null, webhook);
       if (!fields.eventTypes?.length) {
         throw new ApiError(`eventTypes must be a non-empty array`, 400);
       }
@@ -324,7 +344,7 @@ export class DocWorkerApi {
       }
 
       const unsubscribeKey = uuidv4();
-      const webhookSecret: WebHookSecret = {unsubscribeKey, url};
+      const webhookSecret: WebHookSecret = {unsubscribeKey, url, authorization};
       const secretValue = JSON.stringify(webhookSecret);
       const webhookId = (await this._dbManager.addSecret(secretValue, activeDoc.docName)).id;
 
@@ -380,7 +400,7 @@ export class DocWorkerApi {
       const tablesTable = activeDoc.docData!.getMetaTable("_grist_Tables");
       const trigger = webhookId ? activeDoc.triggers.getWebhookTriggerRecord(webhookId) : undefined;
       let currentTableId = trigger ? tablesTable.getValue(trigger.tableRef, 'tableId')! : undefined;
-      const {url, eventTypes, isReadyColumn, name} = webhook;
+      const {url, authorization, eventTypes, watchedColIds, isReadyColumn, name} = webhook;
       const tableId = await getRealTableId(req.params.tableId || webhook.tableId, {metaTables});
 
       const fields: Partial<SchemaTypes['_grist_Triggers']> = {};
@@ -397,6 +417,23 @@ export class DocWorkerApi {
       }
 
       if (tableId !== undefined) {
+        if (watchedColIds) {
+          if (tableId !== currentTableId && currentTableId) {
+            // if the tableId changed, we need to reset the watchedColIds
+            fields.watchedColRefList = [GristObjCode.List];
+          } else {
+            if (!tableId) {
+              throw new ApiError(`Cannot find columns "${watchedColIds}" because table is not known`, 404);
+            }
+            fields.watchedColRefList = [GristObjCode.List, ...watchedColIds
+              .filter(colId => colId.trim() !== "")
+              .map(
+                colId => { return colIdToReference(metaTables, tableId, colId.trim().replace(/^\$/, '')); }
+              )];
+          }
+        } else {
+          fields.watchedColRefList = [GristObjCode.List];
+        }
         fields.tableRef = tableIdToRef(metaTables, tableId);
         currentTableId = tableId;
       }
@@ -425,6 +462,7 @@ export class DocWorkerApi {
       return {
         fields,
         url,
+        authorization,
       };
     }
 
@@ -573,6 +611,9 @@ export class DocWorkerApi {
         validateCore(RecordsPost, req, body);
         const ops = await getTableOperations(req, activeDoc);
         const records = await ops.create(body.records);
+        if (req.query.utm_source === 'grist-forms') {
+          activeDoc.logTelemetryEvent(docSessionFromRequest(req), 'submittedForm');
+        }
         res.json({records});
       })
     );
@@ -871,6 +912,7 @@ export class DocWorkerApi {
       withDocTriggersLock(async (activeDoc, req, res) => {
         await activeDoc.clearWebhookQueue();
         await activeDoc.sendWebhookNotification();
+        this._logClearAllWebhookQueueEvents(activeDoc, req);
         res.json({success: true});
       })
     );
@@ -894,17 +936,16 @@ export class DocWorkerApi {
 
         const docId = activeDoc.docName;
         const webhookId = req.params.webhookId;
-        const {fields, url} = await getWebhookSettings(activeDoc, req, webhookId, req.body);
-
+        const {fields, url, authorization} = await getWebhookSettings(activeDoc, req, webhookId, req.body);
         if (fields.enabled === false) {
-          await activeDoc.triggers.clearSingleWebhookQueue(webhookId);
+          await activeDoc.clearSingleWebhookQueue(webhookId);
         }
 
         const triggerRowId = activeDoc.triggers.getWebhookTriggerRecord(webhookId).id;
 
-        // update url in homedb
-        if (url) {
-          await this._dbManager.updateWebhookUrl(webhookId, docId, url);
+        // update url and authorization header in homedb
+        if (url || authorization) {
+          await this._dbManager.updateWebhookUrlAndAuth({id: webhookId, docId, url, auth: authorization});
           activeDoc.triggers.webhookDeleted(webhookId); // clear cache
         }
 
@@ -927,6 +968,7 @@ export class DocWorkerApi {
         const webhookId = req.params.webhookId;
         await activeDoc.clearSingleWebhookQueue(webhookId);
         await activeDoc.sendWebhookNotification();
+        this._logClearWebhookQueueEvents(activeDoc, req, webhookId);
         res.json({success: true});
       })
     );
@@ -940,11 +982,14 @@ export class DocWorkerApi {
 
     // Reload a document forcibly (in fact this closes the doc, it will be automatically
     // reopened on use).
-    this._app.post('/api/docs/:docId/force-reload', canEdit, throttled(async (req, res) => {
-      const activeDoc = await this._getActiveDoc(req);
+    this._app.post('/api/docs/:docId/force-reload', canEdit, async (req, res) => {
+      const mreq = req as RequestWithLogin;
+      const activeDoc = await this._getActiveDoc(mreq);
+      const document = activeDoc.doc || { id: activeDoc.docName };
       await activeDoc.reloadDoc();
+      this._logReloadDocumentEvents(mreq, document);
       res.json(null);
-    }));
+    });
 
     this._app.post('/api/docs/:docId/recover', canEdit, throttled(async (req, res) => {
       const recoveryModeRaw = req.body.recoveryMode;
@@ -960,14 +1005,16 @@ export class DocWorkerApi {
     // DELETE /api/docs/:docId
     // Delete the specified doc.
     this._app.delete('/api/docs/:docId', canEditMaybeRemoved, throttled(async (req, res) => {
-      await this._removeDoc(req, res, true);
+      const {data} = await this._removeDoc(req, res, true);
+      if (data) { this._logDeleteDocumentEvents(req, data); }
     }));
 
     // POST /api/docs/:docId/remove
     // Soft-delete the specified doc.  If query parameter "permanent" is set,
     // delete permanently.
     this._app.post('/api/docs/:docId/remove', canEditMaybeRemoved, throttled(async (req, res) => {
-      await this._removeDoc(req, res, isParameterOn(req.query.permanent));
+      const {data} = await this._removeDoc(req, res, isParameterOn(req.query.permanent));
+      if (data) { this._logRemoveDocumentEvents(req, data); }
     }));
 
     this._app.get('/api/docs/:docId/snapshots', canView, withDoc(async (activeDoc, req, res) => {
@@ -1067,10 +1114,11 @@ export class DocWorkerApi {
       if (req.body.sourceDocId) {
         options.sourceDocId = await this._confirmDocIdForRead(req, String(req.body.sourceDocId));
         // Make sure that if we wanted to download the full source, we would be allowed.
-        const result = await fetch(this._grist.getHomeUrl(req, `/api/docs/${options.sourceDocId}/download?dryrun=1`), {
+        const homeUrl = this._grist.getHomeInternalUrl(`/api/docs/${options.sourceDocId}/download?dryrun=1`);
+        const result = await fetch(homeUrl, {
           method: 'GET',
           headers: {
-            ...getTransitiveHeaders(req),
+            ...getTransitiveHeaders(req, { includeOrigin: false }),
             'Content-Type': 'application/json',
           }
         });
@@ -1080,10 +1128,10 @@ export class DocWorkerApi {
         }
         // We should make sure the source document has flushed recently.
         // It may not be served by the same worker, so work through the api.
-        await fetch(this._grist.getHomeUrl(req, `/api/docs/${options.sourceDocId}/flush`), {
+        await fetch(this._grist.getHomeInternalUrl(`/api/docs/${options.sourceDocId}/flush`), {
           method: 'POST',
           headers: {
-            ...getTransitiveHeaders(req),
+            ...getTransitiveHeaders(req, { includeOrigin: false }),
             'Content-Type': 'application/json',
           }
         });
@@ -1091,7 +1139,7 @@ export class DocWorkerApi {
           const scope = getDocScope(req);
           const tutorialTrunkId = options.sourceDocId;
           await this._dbManager.connection.transaction(async (manager) => {
-            // Fetch the tutorial trunk doc so we can replace the tutorial doc's name.
+            // Fetch the tutorial trunk so we can replace the tutorial fork's name.
             const tutorialTrunk = await this._dbManager.getDoc({...scope, urlId: tutorialTrunkId}, manager);
             await this._dbManager.updateDocument(
               scope,
@@ -1099,9 +1147,8 @@ export class DocWorkerApi {
                 name: tutorialTrunk.name,
                 options: {
                   tutorial: {
-                    ...tutorialTrunk.options?.tutorial,
-                    // For now, the only state we need to reset is the slide position.
                     lastSlideIndex: 0,
+                    percentComplete: 0,
                   },
                 },
               },
@@ -1120,7 +1167,9 @@ export class DocWorkerApi {
       if (req.body.snapshotId) {
         options.snapshotId = String(req.body.snapshotId);
       }
+      const document = activeDoc.doc || { id: activeDoc.docName };
       await activeDoc.replace(docSession, options);
+      this._logReplaceDocumentEvents(req, document, options);
       res.json(null);
     }));
 
@@ -1132,19 +1181,25 @@ export class DocWorkerApi {
     this._app.post('/api/docs/:docId/states/remove', isOwner, withDoc(async (activeDoc, req, res) => {
       const docSession = docSessionFromRequest(req);
       const keep = integerParam(req.body.keep, 'keep');
-      res.json(await activeDoc.deleteActions(docSession, keep));
+      await activeDoc.deleteActions(docSession, keep);
+      this._logTruncateDocumentHistoryEvents(activeDoc, req, { keep });
+      res.json(null);
     }));
 
     this._app.get('/api/docs/:docId/compare/:docId2', canView, withDoc(async (activeDoc, req, res) => {
       const showDetails = isAffirmative(req.query.detail);
       const docSession = docSessionFromRequest(req);
       const {states} = await this._getStates(docSession, activeDoc);
-      const ref = await fetch(this._grist.getHomeUrl(req, `/api/docs/${req.params.docId2}/states`), {
+      const ref = await fetch(this._grist.getHomeInternalUrl(`/api/docs/${req.params.docId2}/states`), {
         headers: {
-          ...getTransitiveHeaders(req),
+          ...getTransitiveHeaders(req, { includeOrigin: false }),
           'Content-Type': 'application/json',
         }
       });
+      if (!ref.ok) {
+        res.status(ref.status).send(await ref.text());
+        return;
+      }
       const states2: DocState[] = (await ref.json()).states;
       const left = states[0];
       const right = states2[0];
@@ -1168,9 +1223,9 @@ export class DocWorkerApi {
 
         // Calculate changes from the (common) parent to the current version of the other document.
         const url = `/api/docs/${req.params.docId2}/compare?left=${parent.h}`;
-        const rightChangesReq = await fetch(this._grist.getHomeUrl(req, url), {
+        const rightChangesReq = await fetch(this._grist.getHomeInternalUrl(url), {
           headers: {
-            ...getTransitiveHeaders(req),
+            ...getTransitiveHeaders(req, { includeOrigin: false }),
             'Content-Type': 'application/json',
           }
         });
@@ -1216,11 +1271,7 @@ export class DocWorkerApi {
           },
         },
       });
-      this._logCreatedFileImportDocTelemetryEvent(req, {
-        full: {
-          docIdDigest: result.id,
-        },
-      });
+      this._logImportDocumentEvents(mreq, result);
       res.json(result);
     }));
 
@@ -1247,7 +1298,19 @@ export class DocWorkerApi {
     this._app.get('/api/docs/:docId/download/csv', canView, withDoc(async (activeDoc, req, res) => {
       const options = await this._getDownloadOptions(req);
 
-      await downloadCSV(activeDoc, req, res, options);
+      await downloadDSV(activeDoc, req, res, {...options, delimiter: ','});
+    }));
+
+    this._app.get('/api/docs/:docId/download/tsv', canView, withDoc(async (activeDoc, req, res) => {
+      const options = await this._getDownloadOptions(req);
+
+      await downloadDSV(activeDoc, req, res, {...options, delimiter: '\t'});
+    }));
+
+    this._app.get('/api/docs/:docId/download/dsv', canView, withDoc(async (activeDoc, req, res) => {
+      const options = await this._getDownloadOptions(req);
+
+      await downloadDSV(activeDoc, req, res, {...options, delimiter: '💩'});
     }));
 
     this._app.get('/api/docs/:docId/download/xlsx', canView, withDoc(async (activeDoc, req, res) => {
@@ -1353,11 +1416,7 @@ export class DocWorkerApi {
           },
         });
         docId = result.id;
-        this._logCreatedFileImportDocTelemetryEvent(req, {
-          full: {
-            docIdDigest: docId,
-          },
-        });
+        this._logImportDocumentEvents(mreq, result);
       } else if (workspaceId !== undefined) {
         docId = await this._createNewSavedDoc(req, {
           workspaceId: workspaceId,
@@ -1410,7 +1469,7 @@ export class DocWorkerApi {
           .filter(f => {
             const col = Tables_column.getRecord(f.colRef);
             // Formulas and attachments are currently unsupported.
-            return col && !(col.isFormula && col.formula) && col.type !== 'Attachment';
+            return col && !(col.isFormula && col.formula) && col.type !== 'Attachments';
           });
 
         let {layoutSpec: formLayoutSpec} = section;
@@ -1436,9 +1495,8 @@ export class DocWorkerApi {
         }
 
         // Cache the table reads based on tableId. We are caching only the promise, not the result.
-        const table = _.memoize(
-          (tableId: string) => readTable(req, activeDoc, tableId, {}, {}).then(r => asRecords(r))
-        );
+        const table = _.memoize((tableId: string) =>
+          readTable(req, activeDoc, tableId, {}, {}).then(r => asRecords(r, {includeId: true})));
 
         const getTableValues = async (tableId: string, colId: string) => {
           const records = await table(tableId);
@@ -1448,21 +1506,20 @@ export class DocWorkerApi {
         const Tables = activeDoc.docData.getMetaTable('_grist_Tables');
 
         const getRefTableValues = async (col: MetaRowRecord<'_grist_Tables_column'>) => {
-          const refId = col.visibleCol;
-          if (!refId) { return [] as any; }
+          const refTableId = getReferencedTableId(col.type);
+          let refColId: string;
+          if (col.visibleCol) {
+            const refCol = Tables_column.getRecord(col.visibleCol);
+            if (!refCol) { return []; }
 
-          const refCol = Tables_column.getRecord(refId);
-          if (!refCol) { return []; }
+            refColId = refCol.colId as string;
+          } else {
+            refColId = 'id';
+          }
+          if (!refTableId || typeof refTableId !== 'string' || !refColId) { return []; }
 
-          const refTable = Tables.getRecord(refCol.parentId);
-          if (!refTable) { return []; }
-
-          const refTableId = refTable.tableId as string;
-          const refColId = refCol.colId as string;
-          if (!refTableId || !refColId) { return () => []; }
-          if (typeof refTableId !== 'string' || typeof refColId !== 'string') { return []; }
-
-          return await getTableValues(refTableId, refColId);
+          const values = await getTableValues(refTableId, refColId);
+          return values.filter(([_id, value]) => !isBlankValue(value));
         };
 
         const formFields = await Promise.all(fields.map(async (field) => {
@@ -1515,6 +1572,40 @@ export class DocWorkerApi {
         });
       })
     );
+
+    // GET /api/docs/:docId/timings
+    // Checks if timing is on for the document.
+    this._app.get('/api/docs/:docId/timing', isOwner, withDoc(async (activeDoc, req, res) => {
+      if (!activeDoc.isTimingOn) {
+        res.json({status: 'disabled'});
+      } else {
+        const timing =  await activeDoc.getTimings();
+        const status = timing ? 'active' : 'pending';
+        res.json({status, timing});
+      }
+    }));
+
+    // POST /api/docs/:docId/timings/start
+    // Start a timing for the document.
+    this._app.post('/api/docs/:docId/timing/start', isOwner, withDoc(async (activeDoc, req, res) => {
+      if (activeDoc.isTimingOn) {
+        res.status(400).json({error:`Timing already started for ${activeDoc.docName}`});
+        return;
+      }
+      // isTimingOn flag is switched synchronously.
+      await activeDoc.startTiming();
+      res.sendStatus(200);
+    }));
+
+    // POST /api/docs/:docId/timings/stop
+    // Stop a timing for the document.
+    this._app.post('/api/docs/:docId/timing/stop', isOwner, withDoc(async (activeDoc, req, res) => {
+      if (!activeDoc.isTimingOn) {
+        res.status(400).json({error:`Timing not started for ${activeDoc.docName}`});
+        return;
+      }
+      res.json(await activeDoc.stopTiming());
+    }));
   }
 
   /**
@@ -1569,7 +1660,7 @@ export class DocWorkerApi {
     let uploadResult;
     try {
       const accessId = makeAccessId(req, getAuthorizedUserId(req));
-      uploadResult = await fetchDoc(this._grist, sourceDocumentId, req, accessId, asTemplate);
+      uploadResult = await fetchDoc(this._grist, this._docWorkerMap, sourceDocumentId, req, accessId, asTemplate);
       globalUploadSet.changeUploadName(uploadResult.uploadId, accessId, `${documentName}.grist`);
     } catch (err) {
       if ((err as ApiError).status === 403) {
@@ -1580,7 +1671,7 @@ export class DocWorkerApi {
     }
 
     // Then, import the copy to the workspace.
-    const result = await this._docManager.importDocToWorkspace(mreq, {
+    const {id, title: name} = await this._docManager.importDocToWorkspace(mreq, {
       userId,
       uploadId: uploadResult.uploadId,
       documentName,
@@ -1596,31 +1687,13 @@ export class DocWorkerApi {
         },
       },
     });
-
-    const sourceDocument = await this._dbManager.getRawDocById(sourceDocumentId);
-    const isTemplateCopy = sourceDocument.type === 'template';
-    if (isTemplateCopy) {
-      this._grist.getTelemetry().logEvent(mreq, 'copiedTemplate', {
-        full: {
-          templateId: parseUrlId(sourceDocument.urlId || sourceDocument.id).trunkId,
-          userId: mreq.userId,
-          altSessionId: mreq.altSessionId,
-        },
-      });
-    }
-    this._grist.getTelemetry().logEvent(
-      mreq,
-      `createdDoc-${isTemplateCopy ? 'CopyTemplate' : 'CopyDoc'}`,
-      {
-        full: {
-          docIdDigest: result.id,
-          userId: mreq.userId,
-          altSessionId: mreq.altSessionId,
-        },
-      }
-    );
-
-    return result.id;
+    this._logDuplicateDocumentEvents(mreq, {
+      original: { id: sourceDocumentId },
+      duplicate: { id, name, workspace: { id: workspaceId } },
+      asTemplate,
+    })
+      .catch(e => log.error('DocApi failed to log duplicate document events', e));
+    return id;
   }
 
   private async _createNewSavedDoc(req: Request, options: {
@@ -1631,31 +1704,19 @@ export class DocWorkerApi {
     const {status, data, errMessage} = await this._dbManager.addDocument(getScope(req), workspaceId, {
       name: documentName ?? 'Untitled document',
     });
-    const docId = data!;
     if (status !== 200) {
       throw new ApiError(errMessage || 'unable to create document', status);
     }
-    this._logDocumentCreatedTelemetryEvent(req, {
-      limited: {
-        docIdDigest: docId,
-        sourceDocIdDigest: undefined,
-        isImport: false,
-        fileType: undefined,
-        isSaved: true,
-      },
-    });
-    this._logCreatedEmptyDocTelemetryEvent(req, {
-      full: {
-        docIdDigest: docId,
-      },
-    });
-    return docId;
+
+    this._logCreateDocumentEvents(req, data!);
+    return data!.id;
   }
 
   private async _createNewUnsavedDoc(req: Request, options: {
     userId: number,
     browserSettings?: BrowserSettings,
   }): Promise<string> {
+    const mreq = req as RequestWithLogin;
     const {userId, browserSettings} = options;
     const isAnonymous = isAnonymousUser(req);
     const result = makeForkIds({
@@ -1664,61 +1725,13 @@ export class DocWorkerApi {
       trunkDocId: NEW_DOCUMENT_CODE,
       trunkUrlId: NEW_DOCUMENT_CODE,
     });
-    const docId = result.docId;
+    const id = result.docId;
     await this._docManager.createNamedDoc(
-      makeExceptionalDocSession('nascent', {
-        req: req as RequestWithLogin,
-        browserSettings,
-      }),
-      docId
+      makeExceptionalDocSession('nascent', {req: mreq, browserSettings}),
+      id
     );
-    this._logDocumentCreatedTelemetryEvent(req, {
-      limited: {
-        docIdDigest: docId,
-        sourceDocIdDigest: undefined,
-        isImport: false,
-        fileType: undefined,
-        isSaved: false,
-      },
-    });
-    this._logCreatedEmptyDocTelemetryEvent(req, {
-      full: {
-        docIdDigest: docId,
-      },
-    });
-    return docId;
-  }
-
-  private _logDocumentCreatedTelemetryEvent(req: Request, metadata: TelemetryMetadataByLevel) {
-    const mreq = req as RequestWithLogin;
-    this._grist.getTelemetry().logEvent(mreq, 'documentCreated', _.merge({
-      full: {
-        userId: mreq.userId,
-        altSessionId: mreq.altSessionId,
-      },
-    }, metadata));
-  }
-
-  private _logCreatedEmptyDocTelemetryEvent(req: Request, metadata: TelemetryMetadataByLevel) {
-    this._logCreatedDocTelemetryEvent(req, 'createdDoc-Empty', metadata);
-  }
-
-  private _logCreatedFileImportDocTelemetryEvent(req: Request, metadata: TelemetryMetadataByLevel) {
-    this._logCreatedDocTelemetryEvent(req, 'createdDoc-FileImport', metadata);
-  }
-
-  private _logCreatedDocTelemetryEvent(
-    req: Request,
-    event: 'createdDoc-Empty' | 'createdDoc-FileImport',
-    metadata: TelemetryMetadataByLevel,
-  ) {
-    const mreq = req as RequestWithLogin;
-    this._grist.getTelemetry().logEvent(mreq, event, _.merge({
-      full: {
-        userId: mreq.userId,
-        altSessionId: mreq.altSessionId,
-      },
-    }, metadata));
+    this._logCreateDocumentEvents(req as RequestWithLogin, { id, name: "Untitled" });
+    return id;
   }
 
   /**
@@ -1818,7 +1831,7 @@ export class DocWorkerApi {
     // or to be wrongly rejected after upgrading.
     const doc = (req as RequestWithLogin).docAuth!.cachedDoc!;
 
-    const max = doc.workspace.org.billingAccount?.product.features.baseMaxApiUnitsPerDocumentPerDay;
+    const max = doc.workspace.org.billingAccount?.getFeatures().baseMaxApiUnitsPerDocumentPerDay;
     if (!max) {
       // This doc has no associated product (happens to new unsaved docs)
       // or the product has no API limit. Allow the request through.
@@ -2000,10 +2013,10 @@ export class DocWorkerApi {
     return result;
   }
 
-  private async _removeDoc(req: Request, res: Response, permanent: boolean) {
-    const mreq = req as RequestWithLogin;
+  private async _removeDoc(req: Request, res: Response, permanent: boolean): Promise<QueryResult<Document>> {
     const scope = getDocScope(req);
     const docId = getDocId(req);
+    let result: QueryResult<Document>;
     if (permanent) {
       const {forkId} = parseUrlId(docId);
       if (!forkId) {
@@ -2017,28 +2030,36 @@ export class DocWorkerApi {
         ...forks.map((fork) =>
           buildUrlId({forkId: fork.id, forkUserId: fork.createdBy!, trunkId: docId})),
       ];
+      if (!forkId) {
+        // Delete all remote document attachments before the doc itself.
+        // This way we can re-attempt deletion if an error is thrown.
+        const attachmentStores = await this._attachmentStoreProvider.getAllStores();
+        log.debug(`Deleting all attachments for ${docId} from ${attachmentStores.length} stores`);
+        const poolDeletions = attachmentStores.map(
+          store => store.removePool(getDocPoolIdFromDocInfo({ id: docId, trunkId: null }))
+        );
+        await Promise.all(poolDeletions);
+      }
       await Promise.all(docsToDelete.map(docName => this._docManager.deleteDoc(null, docName, true)));
       // Permanently delete from database.
-      const query = await this._dbManager.deleteDocument(scope);
-      this._dbManager.checkQueryResult(query);
-      this._grist.getTelemetry().logEvent(mreq, 'deletedDoc', {
-        full: {
-          docIdDigest: docId,
-          userId: mreq.userId,
-          altSessionId: mreq.altSessionId,
-        },
-      });
-      await sendReply(req, res, query);
+      result = await this._dbManager.deleteDocument(scope);
+      this._dbManager.checkQueryResult(result);
+      await sendReply(req, res, {...result, data: result.data!.id});
     } else {
-      await this._dbManager.softDeleteDocument(scope);
+      result = await this._dbManager.softDeleteDocument(scope);
       await sendOkReply(req, res);
     }
     await this._dbManager.flushSingleDocAuthCache(scope, docId);
     await this._docManager.interruptDocClients(docId);
+    return result;
   }
 
-  private async _runSql(activeDoc: ActiveDoc, req: RequestWithLogin, res: Response,
-      options: Types.SqlPost) {
+  private async _runSql(
+    activeDoc: ActiveDoc,
+    req: RequestWithLogin,
+    res: Response,
+    options: Types.SqlPost
+  ) {
     if (!await activeDoc.canCopyEverything(docSessionFromRequest(req))) {
       throw new ApiError('insufficient document access', 403);
     }
@@ -2079,6 +2100,7 @@ export class DocWorkerApi {
     try {
       const records = await activeDoc.docStorage.all(wrappedStatement,
                                                      ...(options.args || []));
+      this._logRunSQLQueryEvents(activeDoc, req, options);
       res.status(200).json({
         statement,
         records: records.map(
@@ -2103,13 +2125,256 @@ export class DocWorkerApi {
       clearTimeout(interrupt);
     }
   }
+
+  private _logCreateDocumentEvents(
+    req: Request,
+    document: { id: string; name: string; workspace?: Workspace }
+  ) {
+    const mreq = req as RequestWithLogin;
+    const { id, name, workspace } = document;
+    const org = workspace?.org;
+    this._grist.getAuditLogger().logEvent(mreq, {
+      action: "document.create",
+      context: {
+        site: org ? _.pick(org, "id", "name", "domain") : undefined,
+      },
+      details: {
+        document: {
+          id,
+          name,
+          workspace: workspace ? _.pick(workspace, "id", "name") : undefined,
+        },
+      },
+    });
+    this._grist.getTelemetry().logEvent(mreq, 'documentCreated', {
+      limited: {
+        docIdDigest: id,
+        sourceDocIdDigest: undefined,
+        isImport: false,
+        fileType: undefined,
+        isSaved: workspace !== undefined,
+      },
+      full: {
+        userId: mreq.userId,
+        altSessionId: mreq.altSessionId,
+      },
+    });
+    this._grist.getTelemetry().logEvent(mreq, 'createdDoc-Empty', {
+      full: {
+        docIdDigest: id,
+        userId: mreq.userId,
+        altSessionId: mreq.altSessionId,
+      },
+    });
+  }
+
+  private _logRemoveDocumentEvents(req: RequestWithLogin, document: Document) {
+    this._grist.getAuditLogger().logEvent(req, {
+      action: "document.move_to_trash",
+      context: {
+        site: _.pick(document.workspace.org, "id", "name", "domain"),
+      },
+      details: {
+        document: _.pick(document, "id", "name"),
+      },
+    });
+  }
+
+  private _logDeleteDocumentEvents(req: RequestWithLogin, document: Document) {
+    this._grist.getAuditLogger().logEvent(req, {
+      action: "document.delete",
+      context: {
+        site: _.pick(document.workspace.org, "id", "name", "domain"),
+      },
+      details: {
+        document: _.pick(document, "id", "name"),
+      },
+    });
+    this._grist.getTelemetry().logEvent(req, 'deletedDoc', {
+      full: {
+        docIdDigest: document.id,
+        userId: req.userId,
+        altSessionId: req.altSessionId,
+      },
+    });
+  }
+
+  private _logImportDocumentEvents(
+    req: RequestWithLogin,
+    {id}: {id: string}
+  ) {
+    this._grist.getTelemetry().logEvent(req, 'createdDoc-FileImport', {
+      full: {
+        docIdDigest: id,
+        userId: req.userId,
+        altSessionId: req.altSessionId,
+      },
+    });
+  }
+
+  private _logReplaceDocumentEvents(
+    req: RequestWithLogin,
+    document: { id: string; workspace?: Workspace },
+    { sourceDocId, snapshotId }: DocReplacementOptions
+  ) {
+    const org = document.workspace?.org;
+    this._grist.getAuditLogger().logEvent(req, {
+      action: "document.replace",
+      context: {
+        site: org ? _.pick(org, "id") : undefined,
+      },
+      details: {
+        document: _.pick(document, "id"),
+        ...(snapshotId
+          ? { snapshot: { id: snapshotId } }
+          : sourceDocId
+          ? { fork: { document_id: sourceDocId } }
+          : undefined),
+      },
+    });
+  }
+
+  private async _logDuplicateDocumentEvents(req: RequestWithLogin, options: {
+    original: { id: string },
+    duplicate: { id: string; name: string; workspace: { id: number } },
+    asTemplate: boolean;
+  }) {
+    const original = await this._dbManager.getRawDocById(options.original.id);
+    const {duplicate, asTemplate} = options;
+    this._grist.getAuditLogger().logEvent(req, {
+      action: "document.duplicate",
+      context: {
+        site: _.pick(original.workspace.org, "id", "name", "domain"),
+      },
+      details: {
+        original: {
+          document: _.pick(original, "id", "name"),
+        },
+        duplicate: {
+          document: {
+            ..._.pick(duplicate, "id", "name"),
+            workspace: _.pick(duplicate.workspace, "id"),
+          },
+        },
+        options: {
+          as_template: asTemplate,
+        },
+      },
+    });
+    const isTemplateCopy = original.type === 'template';
+    if (isTemplateCopy) {
+      this._grist.getTelemetry().logEvent(req, 'copiedTemplate', {
+        full: {
+          templateId: parseUrlId(original.urlId || original.id).trunkId,
+          userId: req.userId,
+          altSessionId: req.altSessionId,
+        },
+      });
+    }
+    this._grist.getTelemetry().logEvent(
+      req,
+      `createdDoc-${isTemplateCopy ? 'CopyTemplate' : 'CopyDoc'}`,
+      {
+        full: {
+          docIdDigest: duplicate.id,
+          userId: req.userId,
+          altSessionId: req.altSessionId,
+        },
+      }
+    );
+  }
+
+  private _logReloadDocumentEvents(
+    req: RequestWithLogin,
+    document: { id: string; workspace?: Workspace },
+  ) {
+    const org = document.workspace?.org;
+    this._grist.getAuditLogger().logEvent(req, {
+      action: "document.reload",
+      context: {
+        site: org ? _.pick(org, "id") : undefined,
+      },
+      details: {
+        document: _.pick(document, "id"),
+      }
+    });
+  }
+
+  private _logTruncateDocumentHistoryEvents(
+    activeDoc: ActiveDoc,
+    req: RequestWithLogin,
+    { keep }: { keep: number }
+  ) {
+    const document = activeDoc.doc || { id: activeDoc.docName };
+    activeDoc.logAuditEvent(req, {
+      action: "document.truncate_history",
+      details: {
+        document: _.pick(document, "id"),
+        options: {
+          keep_n_most_recent: keep,
+        },
+      },
+    });
+  }
+
+  private _logClearWebhookQueueEvents(
+    activeDoc: ActiveDoc,
+    req: RequestWithLogin,
+    webhookId: string
+  ) {
+    const document = activeDoc.doc || { id: activeDoc.docName };
+    activeDoc.logAuditEvent(req, {
+      action: "document.clear_webhook_queue",
+      details: {
+        document: _.pick(document, "id"),
+        webhook: {
+          id: webhookId,
+        },
+      },
+    });
+  }
+
+  private _logClearAllWebhookQueueEvents(
+    activeDoc: ActiveDoc,
+    req: RequestWithLogin
+  ) {
+    const document = activeDoc.doc || { id: activeDoc.docName };
+    activeDoc.logAuditEvent(req, {
+      action: "document.clear_all_webhook_queues",
+      details: {
+        document: _.pick(document, "id"),
+      },
+    });
+  }
+
+  private _logRunSQLQueryEvents(
+    activeDoc: ActiveDoc,
+    req: RequestWithLogin,
+    { sql: statement, args, timeout: timeout_ms }: Types.SqlPost
+  ) {
+    activeDoc.logAuditEvent(req, {
+      action: "document.run_sql_query",
+      details: {
+        document: {
+          id: activeDoc.docName,
+        },
+        sql_query: {
+          statement,
+          arguments: args,
+        },
+        options: {
+          timeout_ms,
+        }
+      },
+    });
+  }
 }
 
 export function addDocApiRoutes(
   app: Application, docWorker: DocWorker, docWorkerMap: IDocWorkerMap, docManager: DocManager, dbManager: HomeDBManager,
-  grist: GristServer
+  attachmentStoreProvider: IAttachmentStoreProvider, grist: GristServer
 ) {
-  const api = new DocWorkerApi(app, docWorker, docWorkerMap, docManager, dbManager, grist);
+  const api = new DocWorkerApi(app, docWorker, docWorkerMap, docManager, dbManager, attachmentStoreProvider, grist);
   api.addEndpoints();
 }
 

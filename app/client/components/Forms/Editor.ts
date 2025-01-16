@@ -7,10 +7,10 @@ import {makeT} from 'app/client/lib/localization';
 import {hoverTooltip} from 'app/client/ui/tooltips';
 import {IconName} from 'app/client/ui2018/IconList';
 import {icon} from 'app/client/ui2018/icons';
-import {dom, DomContents, IDomArgs, MultiHolder, Observable} from 'grainjs';
+import {BindableValue, dom, DomContents, IDomArgs, MultiHolder, Observable} from 'grainjs';
 
 const testId = makeTestId('test-forms-');
-const t = makeT('FormView.Editor');
+const t = makeT('Editor');
 
 interface Props {
   box: BoxModel,
@@ -23,13 +23,13 @@ interface Props {
    */
   content: DomContents,
   /**
-   * Click handler. If not provided, then clicking on the editor will select it.
+   * Whether to show the remove button. Defaults to true.
    */
-  click?: (ev: MouseEvent, box: BoxModel) => void,
+  showRemoveButton?: BindableValue<boolean>,
   /**
-   * Custom remove icon. If null, then no drop icon is shown.
+   * Custom remove icon.
    */
-  removeIcon?: IconName|null,
+  removeIcon?: IconName,
   /**
    * Custom remove button rendered atop overlay.
    */
@@ -71,22 +71,6 @@ export function buildEditor(props: Props, ...args: IDomArgs<HTMLElement>) {
     style.cssRemoveButton.cls('-right', props.removePosition === 'right'),
   );
 
-  const onClick = (ev: MouseEvent) => {
-    // Only if the click was in this element.
-    const target = ev.target as HTMLElement;
-    if (!target.closest) { return; }
-    // Make sure that the closest editor is this one.
-    const closest = target.closest(`.${style.cssFieldEditor.className}`);
-    if (closest !== element) { return; }
-
-    ev.stopPropagation();
-    ev.preventDefault();
-    props.click?.(ev, props.box);
-
-    // Mark this box as selected.
-    box.view.selectedBox.set(box);
-  };
-
   const dragAbove = Observable.create(owner, false);
   const dragBelow = Observable.create(owner, false);
   const dragging = Observable.create(owner, false);
@@ -107,7 +91,10 @@ export function buildEditor(props: Props, ...args: IDomArgs<HTMLElement>) {
     testId('field-editor-selected', box.selected),
 
     // Select on click.
-    dom.on('click', onClick),
+    dom.on('click', (ev) => {
+      stopEvent(ev);
+      box.view.selectedBox.set(box);
+    }),
 
     // Attach context menu.
     buildMenu({
@@ -118,11 +105,25 @@ export function buildEditor(props: Props, ...args: IDomArgs<HTMLElement>) {
     // And now drag and drop support.
     {draggable: "true"},
 
+    // In Firefox, 'draggable' interferes with mouse selection in child input elements. Workaround
+    // is to turn off 'draggable' temporarily (see https://stackoverflow.com/q/21680363/328565).
+    dom.on('mousedown', (ev, elem) => {
+      const isInput = ["INPUT", "TEXTAREA"].includes((ev.target as Element)?.tagName);
+      // Turn off 'draggable' for inputs only, to support selection there; keep it on elsewhere.
+      elem.draggable = !isInput;
+    }),
+    dom.on('mouseup', (ev, elem) => { elem.draggable = true; }),
+
     // When started, we just put the box into the dataTransfer as a plain text.
     // TODO: this might be very sofisticated in the future.
     dom.on('dragstart', (ev) => {
       // Prevent propagation, as we might be in a nested editor.
       ev.stopPropagation();
+      if (props.editMode?.get()) {
+        ev.preventDefault();
+        return;
+      }
+
       ev.dataTransfer?.setData('text/plain', JSON.stringify(box.toJSON()));
       ev.dataTransfer!.dropEffect = "move";
       dragging.set(true);
@@ -207,7 +208,12 @@ export function buildEditor(props: Props, ...args: IDomArgs<HTMLElement>) {
       }
 
       await box.save(async () => {
-        await box.accept(dropped, wasBelow ? 'below' : 'above')?.afterDrop();
+        // When a field is dragged from the creator panel, it has a colId instead of a fieldRef (as there is no
+        // field yet). In this case, we need to create a field first.
+        if (dropped.type === 'Field' && typeof dropped.leaf === 'string') {
+          dropped.leaf = await view.showColumn(dropped.leaf);
+        }
+        box.accept(dropped, wasBelow ? 'below' : 'above');
       });
     }),
 
@@ -220,10 +226,9 @@ export function buildEditor(props: Props, ...args: IDomArgs<HTMLElement>) {
     testId('element'),
     dom.attr('data-box-model', String(box.type)),
     dom.maybe(overlay, () => style.cssSelectedOverlay()),
-    // Custom icons for removing.
-    props.removeIcon === null || props.removeButton ? null :
-      dom.maybe(use => !props.editMode || !use(props.editMode), defaultRemoveButton),
-    props.removeButton ?? null,
+    dom.maybe(props.showRemoveButton ?? true, () => [
+      props.removeButton ?? dom.maybe(use => !props.editMode || !use(props.editMode), defaultRemoveButton),
+    ]),
     ...args,
   );
 }

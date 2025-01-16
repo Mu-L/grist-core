@@ -1,9 +1,11 @@
 import {
+  commonUrls,
   Features,
   getContactSupportUrl,
   getFreeCoachingCallUrl,
   getHelpCenterUrl,
   getPageTitleSuffix,
+  getTermsOfServiceUrl,
   GristLoadConfig,
   IFeature
 } from 'app/common/gristUrls';
@@ -11,11 +13,11 @@ import {isAffirmative} from 'app/common/gutil';
 import {getTagManagerSnippet} from 'app/common/tagManager';
 import {Document} from 'app/common/UserAPI';
 import {AttachedCustomWidgets, IAttachedCustomWidget} from "app/common/widgetTypes";
-import {SUPPORT_EMAIL} from 'app/gen-server/lib/HomeDBManager';
+import {SUPPORT_EMAIL} from 'app/gen-server/lib/homedb/HomeDBManager';
 import {isAnonymousUser, isSingleUserMode, RequestWithLogin} from 'app/server/lib/Authorizer';
 import {RequestWithOrg} from 'app/server/lib/extractOrg';
 import {GristServer} from 'app/server/lib/GristServer';
-import {getTemplateOrg} from 'app/server/lib/gristSettings';
+import {getOnboardingTutorialDocId, getTemplateOrg} from 'app/server/lib/gristSettings';
 import {getSupportedEngineChoices} from 'app/server/lib/serverUtils';
 import {readLoadedLngs, readLoadedNamespaces} from 'app/server/localization';
 import * as express from 'express';
@@ -23,9 +25,19 @@ import * as fse from 'fs-extra';
 import * as handlebars from 'handlebars';
 import jsesc from 'jsesc';
 import * as path from 'path';
-import difference = require('lodash/difference');
+import difference from 'lodash/difference';
 
-const translate = (req: express.Request, key: string, args?: any) => req.t(`sendAppPage.${key}`, args);
+const { escapeExpression } = handlebars.Utils;
+
+/**
+ * Return the translation given the key.
+ *
+ * @param req
+ * @param key The key of the translation (which will be prefixed by `sendAppPage`)
+ * @param args The args to pass to the translation string (optional)
+ */
+const translate = (req: express.Request, key: string, args?: any) =>  req.t(`sendAppPage.${key}`, args)?.toString();
+
 
 export interface ISendAppPageOptions {
   path: string;        // Ignored if .content is present (set to "" for clarity).
@@ -62,6 +74,7 @@ export function makeGristConfig(options: MakeGristConfigOptions): GristLoadConfi
     baseDomain,
     singleOrg: process.env.GRIST_SINGLE_ORG,
     helpCenterUrl: getHelpCenterUrl(),
+    termsOfServiceUrl: getTermsOfServiceUrl(),
     freeCoachingCallUrl: getFreeCoachingCallUrl(),
     contactSupportUrl: getContactSupportUrl(),
     pathOnly,
@@ -82,21 +95,26 @@ export function makeGristConfig(options: MakeGristConfigOptions): GristLoadConfi
         ((server?.getBundledWidgets().length || 0) > 0),
     survey: Boolean(process.env.DOC_ID_NEW_USER_INFO),
     tagManagerId: process.env.GOOGLE_TAG_MANAGER_ID,
-    activation: getActivation(req as RequestWithLogin | undefined),
+    activation: (req as RequestWithLogin|undefined)?.activation,
     enableCustomCss: isAffirmative(process.env.APP_STATIC_INCLUDE_CUSTOM_CSS),
     supportedLngs: readLoadedLngs(req?.i18n),
     namespaces: readLoadedNamespaces(req?.i18n),
     featureComments: isAffirmative(process.env.COMMENTS),
-    featureFormulaAssistant: Boolean(process.env.OPENAI_API_KEY || process.env.ASSISTANT_CHAT_COMPLETION_ENDPOINT),
+    featureFormulaAssistant: Boolean(process.env.OPENAI_API_KEY ||
+      process.env.ASSISTANT_API_KEY  ||
+      process.env.ASSISTANT_CHAT_COMPLETION_ENDPOINT),
     assistantService: process.env.OPENAI_API_KEY ? 'OpenAI' : undefined,
     permittedCustomWidgets: getPermittedCustomWidgets(server),
     supportEmail: SUPPORT_EMAIL,
     userLocale: (req as RequestWithLogin | undefined)?.user?.options?.locale,
     telemetry: server?.getTelemetry().getTelemetryConfig(req as RequestWithLogin | undefined),
     deploymentType: server?.getDeploymentType(),
+    forceEnableEnterprise: isAffirmative(process.env.GRIST_FORCE_ENABLE_ENTERPRISE),
     templateOrg: getTemplateOrg(),
+    onboardingTutorialDocId: getOnboardingTutorialDocId(),
     canCloseAccount: isAffirmative(process.env.GRIST_ACCOUNT_CLOSE),
     experimentalPlugins: isAffirmative(process.env.GRIST_EXPERIMENTAL_PLUGINS),
+    notifierEnabled: server?.hasNotifier(),
     ...extra,
   };
 }
@@ -117,15 +135,16 @@ export function makeMessagePage(staticDir: string) {
   };
 }
 
+export type SendAppPageFunction =
+  (req: express.Request, resp: express.Response, options: ISendAppPageOptions) => Promise<void>;
+
 /**
  * Send a simple template page, read from file at pagePath (relative to static/), with certain
  * placeholders replaced.
  */
-export function makeSendAppPage(opts: {
-  server: GristServer, staticDir: string, tag: string, testLogin?: boolean,
-  baseDomain?: string
-}) {
-  const {server, staticDir, tag, testLogin} = opts;
+export function makeSendAppPage({ server, staticDir, tag, testLogin, baseDomain }: {
+  server: GristServer, staticDir: string, tag: string, testLogin?: boolean, baseDomain?: string
+}): SendAppPageFunction {
 
   // If env var GRIST_INCLUDE_CUSTOM_SCRIPT_URL is set, load it in a <script> tag on all app pages.
   const customScriptUrl = process.env.GRIST_INCLUDE_CUSTOM_SCRIPT_URL;
@@ -136,7 +155,7 @@ export function makeSendAppPage(opts: {
     const config = makeGristConfig({
       homeUrl: !isSingleUserMode() ? server.getHomeUrl(req) : null,
       extra: options.config,
-      baseDomain: opts.baseDomain,
+      baseDomain,
       req,
       server,
     });
@@ -166,8 +185,8 @@ export function makeSendAppPage(opts: {
     ).join('\n');
     const content = fileContent
       .replace("<!-- INSERT WARNING -->", warning)
-      .replace("<!-- INSERT TITLE -->", getPageTitle(req, config))
-      .replace("<!-- INSERT META -->", getPageMetadataHtmlSnippet(config))
+      .replace("<!-- INSERT TITLE -->", getDocName(config) ?? escapeExpression(translate(req, 'Loading...')))
+      .replace("<!-- INSERT META -->", getPageMetadataHtmlSnippet(req, config))
       .replace("<!-- INSERT TITLE SUFFIX -->", getPageTitleSuffix(server.getGristConfig()))
       .replace("<!-- INSERT BASE -->", `<base href="${staticBaseUrl}">` + tagManagerSnippet)
       .replace("<!-- INSERT LOCALE -->", preloads)
@@ -256,18 +275,15 @@ function configuredPageTitleSuffix() {
 }
 
 /**
- * Returns a page title suitable for inserting into an HTML title element.
- *
- * Currently returns the document name if the page being requested is for a document, or
- * a placeholder, "Loading...", that's updated in the client once the page has loaded.
+ * Returns the doc name.
  *
  * Note: The string returned is escaped and safe to insert into HTML.
+ *
  */
-function getPageTitle(req: express.Request, config: GristLoadConfig): string {
+function getDocName(config: GristLoadConfig): string|null {
   const maybeDoc = getDocFromConfig(config);
-  if (!maybeDoc) { return translate(req, 'Loading') + "..."; }
 
-  return handlebars.Utils.escapeExpression(maybeDoc.name);
+  return maybeDoc && escapeExpression(maybeDoc.name);
 }
 
 /**
@@ -278,25 +294,31 @@ function getPageTitle(req: express.Request, config: GristLoadConfig): string {
  *
  * Note: The string returned is escaped and safe to insert into HTML.
  */
-function getPageMetadataHtmlSnippet(config: GristLoadConfig): string {
+function getPageMetadataHtmlSnippet(req: express.Request, config: GristLoadConfig): string {
   const metadataElements: string[] = [];
   const maybeDoc = getDocFromConfig(config);
 
-  const description = maybeDoc?.options?.description;
-  if (description) {
-    const content = handlebars.Utils.escapeExpression(description);
-    metadataElements.push(`<meta name="description" content="${content}">`);
-    metadataElements.push(`<meta property="og:description" content="${content}">`);
-    metadataElements.push(`<meta name="twitter:description" content="${content}">`);
-  }
+  metadataElements.push('<meta property="og:type" content="website">');
+  metadataElements.push('<meta name="twitter:card" content="summary_large_image">');
 
-  const icon = maybeDoc?.options?.icon;
-  if (icon) {
-    const content = handlebars.Utils.escapeExpression(icon);
-    metadataElements.push(`<meta name="thumbnail" content="${content}">`);
-    metadataElements.push(`<meta property="og:image" content="${content}">`);
-    metadataElements.push(`<meta name="twitter:image" content="${content}">`);
-  }
+  const description = maybeDoc?.options?.description ?
+    escapeExpression(maybeDoc.options.description) :
+    translate(req, 'og-description');
+  metadataElements.push(`<meta name="description" content="${description}">`);
+  metadataElements.push(`<meta property="og:description" content="${description}">`);
+  metadataElements.push(`<meta name="twitter:description" content="${description}">`);
+
+  const openGraphPreviewImage = process.env.GRIST_OPEN_GRAPH_PREVIEW_IMAGE || commonUrls.openGraphPreviewImage;
+  const image = escapeExpression(maybeDoc?.options?.icon ?? openGraphPreviewImage);
+  metadataElements.push(`<meta name="thumbnail" content="${image}">`);
+  metadataElements.push(`<meta property="og:image" content="${image}">`);
+  metadataElements.push(`<meta name="twitter:image" content="${image}">`);
+
+  const maybeDocTitle = getDocName(config);
+  const title = maybeDocTitle ? maybeDocTitle + getPageTitleSuffix(config) : translate(req, 'og-title');
+  // NB: We don't generate the content of the <title> tag here.
+  metadataElements.push(`<meta property="og:title" content="${title}">`);
+  metadataElements.push(`<meta name="twitter:title" content="${title}">`);
 
   return metadataElements.join('\n');
 }
@@ -305,12 +327,4 @@ function getDocFromConfig(config: GristLoadConfig): Document | null {
   if (!config.getDoc || !config.assignmentId) { return null; }
 
   return config.getDoc[config.assignmentId] ?? null;
-}
-
-function getActivation(mreq: RequestWithLogin|undefined) {
-  const defaultEmail = process.env.GRIST_DEFAULT_EMAIL;
-  return {
-    ...mreq?.activation,
-    isManager: Boolean(defaultEmail && defaultEmail === mreq?.user?.loginEmail),
-  };
 }

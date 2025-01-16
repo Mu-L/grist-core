@@ -11,7 +11,7 @@
  * into a file whose path is printed when server starts.
  */
 import {encodeUrl, IGristUrlState, parseSubdomain} from 'app/common/gristUrls';
-import {HomeDBManager} from 'app/gen-server/lib/HomeDBManager';
+import {HomeDBManager} from 'app/gen-server/lib/homedb/HomeDBManager';
 import log from 'app/server/lib/log';
 import {getAppRoot} from 'app/server/lib/places';
 import {makeGristConfig} from 'app/server/lib/sendAppPage';
@@ -67,6 +67,9 @@ export class TestServerMerged extends EventEmitter implements IMochaServer {
     this._starts++;
     const workerIdText = process.env.MOCHA_WORKER_ID || '0';
     if (reset) {
+      // Make sure this test server doesn't keep using the DB that's about to disappear.
+      await this.closeDatabase();
+
       if (process.env.TESTDIR) {
         this.testDir = path.join(process.env.TESTDIR, workerIdText);
       } else {
@@ -149,7 +152,10 @@ export class TestServerMerged extends EventEmitter implements IMochaServer {
       delete env.DOC_WORKER_COUNT;
     }
     this._server = spawn('node', [cmd], {
-      env,
+      env: {
+        ...env,
+        ...(process.env.SERVER_NODE_OPTIONS ? {NODE_OPTIONS: process.env.SERVER_NODE_OPTIONS} : {})
+      },
       stdio: quiet ? 'ignore' : ['inherit', serverLog, serverLog],
     });
     this._exitPromise = exitPromise(this._server);

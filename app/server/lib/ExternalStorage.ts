@@ -1,11 +1,11 @@
 import {ObjMetadata, ObjSnapshot, ObjSnapshotWithMetadata} from 'app/common/DocSnapshot';
-import {isAffirmative} from 'app/common/gutil';
 import log from 'app/server/lib/log';
 import {createTmpDir} from 'app/server/lib/uploads';
 
 import {delay} from 'bluebird';
 import * as fse from 'fs-extra';
 import * as path from 'path';
+import stream from 'node:stream';
 
 // A special token representing a deleted document, used in places where a
 // checksum is expected otherwise.
@@ -40,6 +40,9 @@ export interface ExternalStorage {
   // newest should be given first.
   remove(key: string, snapshotIds?: string[]): Promise<void>;
 
+  // Removes all keys which start with the given prefix
+  removeAllWithPrefix?(prefix: string): Promise<void>;
+
   // List content versions that exist for the given key.  More recent versions should
   // come earlier in the result list.
   versions(key: string): Promise<ObjSnapshot[]>;
@@ -54,6 +57,11 @@ export interface ExternalStorage {
 
   // Close the storage object.
   close(): Promise<void>;
+}
+
+export interface StreamingExternalStorage extends ExternalStorage {
+  uploadStream(key: string, inStream: stream.Readable, metadata?: ObjMetadata): Promise<string|null|typeof Unchanged>;
+  downloadStream(key: string, outStream: stream.Writable, snapshotId?: string ): Promise<string>;
 }
 
 /**
@@ -236,19 +244,8 @@ export class ChecksummedExternalStorage implements ExternalStorage {
           // We are confident this should not be the case anymore, though this has to be studied carefully.
           // If a snapshotId was specified, we can skip this check.
           if (expectedChecksum && expectedChecksum !== checksum) {
-            const message = `ext ${this.label} download: data for ${fromKey} has wrong checksum:` +
-              ` ${checksum} (expected ${expectedChecksum})`;
-
-            // If GRIST_SKIP_REDIS_CHECKSUM_MISMATCH is set, issue a warning only and continue,
-            // rather than issuing an error and failing.
-            // This flag is experimental and should be removed once we are
-            // confident that the checksums verification is useless.
-            if (isAffirmative(process.env.GRIST_SKIP_REDIS_CHECKSUM_MISMATCH)) {
-              log.warn(message);
-            } else {
-              log.error(message);
-              return undefined;
-            }
+            log.warn(`ext ${this.label} download: data for ${fromKey} has wrong checksum:` +
+              ` ${checksum} (expected ${expectedChecksum})`);
           }
         }
 
@@ -387,6 +384,36 @@ export interface ExternalStorageSettings {
   purpose: 'doc' | 'meta';
   basePrefix?: string;
   extraPrefix?: string;
+}
+
+/**
+ * Function returning the core ExternalStorage implementation,
+ * which may then be wrapped in additional layer(s) of ExternalStorage.
+ * See ICreate.ExternalStorage.
+ * Uses S3 by default in hosted Grist.
+*/
+export type ExternalStorageCreator =
+  (purpose: ExternalStorageSettings["purpose"], extraPrefix: string) => ExternalStorage | undefined;
+
+function stripTrailingSlash(text: string): string {
+  return text.endsWith("/") ? text.slice(0, -1) : text;
+}
+
+function stripLeadingSlash(text: string): string {
+  return text[0] === "/" ? text.slice(1) : text;
+}
+
+export function joinKeySegments(keySegments: string[]): string {
+  if (keySegments.length < 1) {
+    return "";
+  }
+  const firstPart = keySegments[0];
+  const remainingParts = keySegments.slice(1);
+  const strippedParts = [
+    stripTrailingSlash(firstPart),
+    ...remainingParts.map(stripTrailingSlash).map(stripLeadingSlash)
+  ];
+  return strippedParts.join("/");
 }
 
 /**

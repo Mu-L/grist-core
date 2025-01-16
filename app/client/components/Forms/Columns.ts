@@ -5,12 +5,16 @@ import {buildMenu} from 'app/client/components/Forms/Menu';
 import {BoxModel} from 'app/client/components/Forms/Model';
 import * as style from 'app/client/components/Forms/styles';
 import {makeTestId} from 'app/client/lib/domUtils';
+import {makeT} from 'app/client/lib/localization';
 import {icon} from 'app/client/ui2018/icons';
 import * as menus from 'app/client/ui2018/menus';
 import {inlineStyle, not} from 'app/common/gutil';
 import {bundleChanges, Computed, dom, IDomArgs, MultiHolder, Observable, styled} from 'grainjs';
+import {v4 as uuidv4} from 'uuid';
 
 const testId = makeTestId('test-forms-');
+
+const t = makeT('Columns');
 
 export class ColumnsModel extends BoxModel {
   private _columnCount = Computed.create(this, use => use(this.children).length);
@@ -63,7 +67,11 @@ export class ColumnsModel extends BoxModel {
       cssPlaceholder(
         testId('add'),
         icon('Plus'),
-        dom.on('click', () => this.placeAfterListChild()(Placeholder())),
+        dom.on('click', async () => {
+          await this.save(() => {
+            this.placeAfterListChild()(Placeholder());
+          });
+        }),
         style.cssColumn.cls('-add-button'),
         style.cssColumn.cls('-drag-over', dragHover),
 
@@ -93,17 +101,23 @@ export class ColumnsModel extends BoxModel {
     const fieldsToRemove = (Array.from(this.filter(b => b instanceof FieldModel)) as FieldModel[]);
     const fieldIdsToRemove = fieldsToRemove.map(f => f.leaf.get());
 
-    // Remove each child of this column from the layout.
-    this.children.get().forEach(child => { child.removeSelf(); });
-
-    // Remove this column from the layout.
-    this.removeSelf();
-
-    // Finally, remove the fields and save the changes to the layout.
     await this.parent?.save(async () => {
+      // FormView is particularly sensitive to the order that view fields and
+      // the form layout are modified. Specifically, if the layout is
+      // modified before view fields are removed, deleting a column with
+      // mapped fields inside seems to break. The same issue affects sections
+      // containing mapped fields. Reversing the order causes no such issues.
+      //
+      // TODO: narrow down why this happens and see if it's worth fixing.
       if (fieldIdsToRemove.length > 0) {
         await this.view.viewSection.removeField(fieldIdsToRemove);
       }
+
+      // Remove each child of this column from the layout.
+      this.children.get().forEach(child => { child.removeSelf(); });
+
+      // Remove this column from the layout.
+      this.removeSelf();
     });
   }
 }
@@ -145,7 +159,7 @@ export class PlaceholderModel extends BoxModel {
       buildMenu({
         box: this,
         insertBox,
-        customItems: [menus.menuItem(removeColumn, menus.menuIcon('Remove'), 'Remove Column')],
+        customItems: [menus.menuItem(removeColumn, menus.menuIcon('Remove'), t('Remove Column'))],
       }),
 
       dom.on('contextmenu', (ev) => {
@@ -212,22 +226,18 @@ export class PlaceholderModel extends BoxModel {
       return box.parent.replace(box, childBox);
     }
 
-    function removeColumn() {
-      box.removeSelf();
+    async function removeColumn() {
+      await box.deleteSelf();
     }
   }
 }
 
-export function Paragraph(text: string, alignment?: 'left'|'right'|'center'): FormLayoutNode {
-  return {type: 'Paragraph', text, alignment};
-}
-
 export function Placeholder(): FormLayoutNode {
-  return {type: 'Placeholder'};
+  return {id: uuidv4(), type: 'Placeholder'};
 }
 
 export function Columns(): FormLayoutNode {
-  return {type: 'Columns', children: [Placeholder(), Placeholder()]};
+  return {id: uuidv4(), type: 'Columns', children: [Placeholder(), Placeholder()]};
 }
 
 const cssPlaceholder = styled('div', `

@@ -39,6 +39,14 @@ export async function exportToDrive(
       streamXLSX(activeDoc, req, stream, {tableId: ''}),
       sendFileToDrive(name, stream, access_token),
     ]);
+    activeDoc.logAuditEvent(mreq, {
+      action: "document.send_to_google_drive",
+      details: {
+        document: {
+          id: activeDoc.docName,
+        },
+      },
+    });
     log.debug(`Export to drive - File exported, redirecting to Google Spreadsheet ${url}`, meta);
     res.json({ url });
   } catch (err) {

@@ -5,9 +5,9 @@ import {SHARE_KEY_PREFIX} from 'app/common/gristUrls';
 import {arrayRepeat} from 'app/common/gutil';
 import {WebhookSummary} from 'app/common/Triggers';
 import {DocAPI, DocState, UserAPIImpl} from 'app/common/UserAPI';
-import {testDailyApiLimitFeatures} from 'app/gen-server/entity/Product';
 import {AddOrUpdateRecord, Record as ApiRecord, ColumnsPut, RecordWithStringId} from 'app/plugin/DocApiTypes';
 import {CellValue, GristObjCode} from 'app/plugin/GristData';
+import {Deps} from 'app/server/lib/ActiveDoc';
 import {
   applyQueryParameters,
   docApiUsagePeriods,
@@ -15,7 +15,7 @@ import {
   getDocApiUsageKeysToIncr,
   WebhookSubscription
 } from 'app/server/lib/DocApi';
-import {delayAbort} from 'app/server/lib/serverUtils';
+import {delayAbort, getAvailablePort} from 'app/server/lib/serverUtils';
 import axios, {AxiosRequestConfig, AxiosResponse} from 'axios';
 import {delay} from 'bluebird';
 import {assert} from 'chai';
@@ -30,23 +30,19 @@ import fetch from 'node-fetch';
 import {tmpdir} from 'os';
 import * as path from 'path';
 import {createClient, RedisClient} from 'redis';
+import * as sinon from 'sinon';
 import {configForUser} from 'test/gen-server/testUtils';
 import {serveSomething, Serving} from 'test/server/customUtil';
 import {prepareDatabase} from 'test/server/lib/helpers/PrepareDatabase';
 import {prepareFilesystemDirectoryForTests} from 'test/server/lib/helpers/PrepareFilesystemDirectoryForTests';
 import {signal} from 'test/server/lib/helpers/Signal';
-import {TestServer} from 'test/server/lib/helpers/TestServer';
+import {TestServer, TestServerReverseProxy} from 'test/server/lib/helpers/TestServer';
 import * as testUtils from 'test/server/testUtils';
 import {waitForIt} from 'test/server/wait';
 import defaultsDeep = require('lodash/defaultsDeep');
 import pick = require('lodash/pick');
-import { getDatabase } from 'test/testUtils';
-
-const chimpy = configForUser('Chimpy');
-const kiwi = configForUser('Kiwi');
-const charon = configForUser('Charon');
-const nobody = configForUser('Anonymous');
-const support = configForUser('support');
+import {getDatabase} from 'test/testUtils';
+import {testDailyApiLimitFeatures} from 'test/gen-server/seed';
 
 // some doc ids
 const docIds: { [name: string]: string } = {
@@ -68,21 +64,47 @@ let hasHomeApi: boolean;
 let home: TestServer;
 let docs: TestServer;
 let userApi: UserAPIImpl;
+let extraHeadersForConfig = {};
+
+function makeConfig(username: string): AxiosRequestConfig {
+  const originalConfig = configForUser(username);
+  return {
+    ...originalConfig,
+    headers: {
+      ...originalConfig.headers,
+      ...extraHeadersForConfig
+    }
+  };
+}
+
+// Much like home.makeUserApi, except it injects extraHeadersForConfig (for tests with reverse-proxy)
+function makeUserApi(
+  org: string,
+  username: string,
+  options?: {
+    baseUrl?: string
+  }
+) {
+  return new UserAPIImpl(`${options?.baseUrl ?? homeUrl}/o/${org}`, {
+    headers: makeConfig(username).headers as Record<string, string>,
+    fetch: fetch as unknown as typeof globalThis.fetch,
+    newFormData: () => new FormData() as any,
+  });
+}
 
 describe('DocApi', function () {
+  const webhooksTestPort = Number(process.env.WEBHOOK_TEST_PORT || 34365);
+
   this.timeout(30000);
   testUtils.setTmpLogLevel('error');
+  const sandbox = sinon.createSandbox();
   let oldEnv: testUtils.EnvironmentSnapshot;
 
   before(async function () {
+    sandbox.stub(Deps, 'ACTIVEDOC_TIMEOUT').value(30);
     oldEnv = new testUtils.EnvironmentSnapshot();
 
-    // Clear redis test database if redis is in use.
-    if (process.env.TEST_REDIS_URL) {
-      const cli = createClient(process.env.TEST_REDIS_URL);
-      await cli.flushdbAsync();
-      await cli.quitAsync();
-    }
+    await flushAllRedis();
 
     // Create the tmp dir removing any previous one
     await prepareFilesystemDirectoryForTests(tmpDir);
@@ -97,6 +119,7 @@ describe('DocApi', function () {
   });
 
   after(() => {
+    sandbox.restore();
     oldEnv.restore();
   });
 
@@ -120,7 +143,7 @@ describe('DocApi', function () {
       homeUrl = serverUrl = home.serverUrl;
       hasHomeApi = true;
     });
-    testDocApi();
+    testDocApi({webhooksTestPort});
   });
 
   describe('With GRIST_ANON_PLAYGROUND disabled', async () => {
@@ -136,6 +159,7 @@ describe('DocApi', function () {
     });
 
     it('should not allow anonymous users to create new docs', async () => {
+      const nobody = makeConfig('Anonymous');
       const resp = await axios.post(`${serverUrl}/api/docs`, null, nobody);
       assert.equal(resp.status, 403);
     });
@@ -151,11 +175,112 @@ describe('DocApi', function () {
         };
 
         home = await TestServer.startServer('home', tmpDir, suitename, additionalEnvConfiguration);
-        docs = await TestServer.startServer('docs', tmpDir, suitename, additionalEnvConfiguration, home.serverUrl);
         homeUrl = serverUrl = home.serverUrl;
+        docs = await TestServer.startServer('docs', tmpDir, suitename, additionalEnvConfiguration, homeUrl);
         hasHomeApi = true;
       });
-      testDocApi();
+      testDocApi({webhooksTestPort});
+    });
+
+    describe('behind a reverse-proxy', function () {
+      async function setupServersWithProxy(
+        suitename: string,
+        { withAppHomeInternalUrl }: { withAppHomeInternalUrl: boolean }
+      ) {
+        const proxy = await TestServerReverseProxy.build();
+
+        const homePort = await getAvailablePort(parseInt(process.env.GET_AVAILABLE_PORT_START || '8080', 10));
+        const home = new TestServer('home', homePort, tmpDir, suitename);
+
+        const additionalEnvConfiguration = {
+          ALLOWED_WEBHOOK_DOMAINS: `example.com,localhost:${webhooksTestPort}`,
+          GRIST_DATA_DIR: dataDir,
+          APP_HOME_URL: proxy.serverUrl,
+          GRIST_ORG_IN_PATH: 'true',
+          GRIST_SINGLE_PORT: '0',
+          APP_HOME_INTERNAL_URL: withAppHomeInternalUrl ? home.serverUrl : '',
+        };
+
+        await home.start(home.serverUrl, additionalEnvConfiguration);
+
+        const docPort = await getAvailablePort(parseInt(process.env.GET_AVAILABLE_PORT_START || '8080', 10));
+        const docs = new TestServer('docs', docPort, tmpDir, suitename);
+        await docs.start(home.serverUrl, {
+          ...additionalEnvConfiguration,
+          APP_DOC_URL: `${proxy.serverUrl}/dw/dw1`,
+          APP_DOC_INTERNAL_URL: docs.serverUrl,
+        });
+
+        proxy.requireFromOutsideHeader();
+
+        proxy.start(home, docs);
+
+        homeUrl = serverUrl = proxy.serverUrl;
+        hasHomeApi = true;
+        extraHeadersForConfig = {
+          Origin: serverUrl,
+          ...TestServerReverseProxy.FROM_OUTSIDE_HEADER,
+        };
+
+        return {proxy, home, docs};
+      }
+
+      async function tearDown(proxy: TestServerReverseProxy, servers: TestServer[]) {
+        proxy.stop();
+        for (const server of servers) {
+          await server.stop();
+        }
+        await flushAllRedis();
+      }
+
+      let proxy: TestServerReverseProxy;
+
+      describe('with APP_HOME_INTERNAL_URL set', function () {
+        setup('behind-proxy-testdocs', async () => {
+          ({proxy, home, docs} = await setupServersWithProxy(suitename, {withAppHomeInternalUrl: true}));
+        });
+
+        after(() => tearDown(proxy, [home, docs]));
+
+        testDocApi({webhooksTestPort});
+      });
+
+      async function testCompareDocs(proxy: TestServerReverseProxy, home: TestServer) {
+        const chimpyApi = makeUserApi(ORG_NAME, 'chimpy');
+        const ws1 = (await chimpyApi.getOrgWorkspaces('current'))[0].id;
+        const docId1 = await chimpyApi.newDoc({name: 'testdoc1'}, ws1);
+        const docId2 = await chimpyApi.newDoc({name: 'testdoc2'}, ws1);
+        const doc1 = chimpyApi.getDocAPI(docId1);
+
+        return doc1.compareDoc(docId2);
+      }
+
+      describe('specific tests with APP_HOME_INTERNAL_URL', function () {
+        setup('behind-proxy-with-apphomeinternalurl', async () => {
+          // APP_HOME_INTERNAL_URL will be set by TestServer.
+          ({proxy, home, docs} = await setupServersWithProxy(suitename, {withAppHomeInternalUrl: true}));
+        });
+
+        after(() => tearDown(proxy, [home, docs]));
+
+        it('should succeed to compare docs', async function () {
+          const res = await testCompareDocs(proxy, home);
+          assert.exists(res);
+        });
+      });
+
+      describe('specific tests without APP_HOME_INTERNAL_URL', function () {
+        setup('behind-proxy-without-apphomeinternalurl', async () => {
+          ({proxy, home, docs} = await setupServersWithProxy(suitename, {withAppHomeInternalUrl: false}));
+        });
+
+        after(() => tearDown(proxy, [home, docs]));
+
+        it('should fail to compare docs', async function () {
+          const promise = testCompareDocs(proxy, home);
+          await assert.isRejected(promise, /TestServerReverseProxy: called public URL/);
+        });
+      });
     });
 
     describe("should work directly with a docworker", async () => {
@@ -165,12 +290,12 @@ describe('DocApi', function () {
           GRIST_DATA_DIR: dataDir
         };
         home = await TestServer.startServer('home', tmpDir, suitename, additionalEnvConfiguration);
-        docs = await TestServer.startServer('docs', tmpDir, suitename, additionalEnvConfiguration, home.serverUrl);
         homeUrl = home.serverUrl;
+        docs = await TestServer.startServer('docs', tmpDir, suitename, additionalEnvConfiguration, homeUrl);
         serverUrl = docs.serverUrl;
         hasHomeApi = false;
       });
-      testDocApi();
+      testDocApi({webhooksTestPort});
     });
   }
 
@@ -232,7 +357,21 @@ describe('DocApi', function () {
 });
 
 // Contains the tests. This is where you want to add more test.
-function testDocApi() {
+function testDocApi(settings: {
+  webhooksTestPort: number,
+}) {
+  const { webhooksTestPort } = settings;
+  let chimpy: AxiosRequestConfig, kiwi: AxiosRequestConfig,
+    charon: AxiosRequestConfig, nobody: AxiosRequestConfig, support: AxiosRequestConfig;
+
+  before(function () {
+    chimpy = makeConfig('Chimpy');
+    kiwi = makeConfig('Kiwi');
+    charon = makeConfig('Charon');
+    nobody = makeConfig('Anonymous');
+    support = makeConfig('support');
+  });
+
   async function generateDocAndUrl(docName: string = "Dummy") {
     const wid = (await userApi.getOrgWorkspaces('current')).find((w) => w.name === 'Private')!.id;
     const docId = await userApi.newDoc({name: docName}, wid);
@@ -246,7 +385,7 @@ function testDocApi() {
     const ws1 = (await userApi.getOrgWorkspaces('current'))[0].id;
     // Make sure kiwi isn't allowed here.
     await userApi.updateOrgPermissions(ORG_NAME, {users: {[kiwiEmail]: null}});
-    const kiwiApi = home.makeUserApi(ORG_NAME, 'kiwi');
+    const kiwiApi = makeUserApi(ORG_NAME, 'kiwi');
     await assert.isRejected(kiwiApi.getWorkspaceAccess(ws1), /Forbidden/);
     // Add kiwi as an editor for the org.
     await assert.isRejected(kiwiApi.getOrgAccess(ORG_NAME), /Forbidden/);
@@ -266,7 +405,7 @@ function testDocApi() {
     const ws1 = (await userApi.getOrgWorkspaces('current'))[0].id;
     await userApi.updateOrgPermissions(ORG_NAME, {users: {[kiwiEmail]: null}});
     // Make sure kiwi isn't allowed here.
-    const kiwiApi = home.makeUserApi(ORG_NAME, 'kiwi');
+    const kiwiApi = makeUserApi(ORG_NAME, 'kiwi');
     await assert.isRejected(kiwiApi.getWorkspaceAccess(ws1), /Forbidden/);
     // Add kiwi as an editor of this workspace.
     await userApi.updateWorkspacePermissions(ws1, {users: {[kiwiEmail]: 'editors'}});
@@ -285,7 +424,7 @@ function testDocApi() {
   it("should allow only owners to remove a document", async () => {
     const ws1 = (await userApi.getOrgWorkspaces('current'))[0].id;
     const doc1 = await userApi.newDoc({name: 'testdeleteme1'}, ws1);
-    const kiwiApi = home.makeUserApi(ORG_NAME, 'kiwi');
+    const kiwiApi = makeUserApi(ORG_NAME, 'kiwi');
 
     // Kiwi is editor of the document, so he can't delete it.
     await userApi.updateDocPermissions(doc1, {users: {'kiwi@getgrist.com': 'editors'}});
@@ -301,7 +440,7 @@ function testDocApi() {
   it("should allow only owners to rename a document", async () => {
     const ws1 = (await userApi.getOrgWorkspaces('current'))[0].id;
     const doc1 = await userApi.newDoc({name: 'testrenameme1'}, ws1);
-    const kiwiApi = home.makeUserApi(ORG_NAME, 'kiwi');
+    const kiwiApi = makeUserApi(ORG_NAME, 'kiwi');
 
     // Kiwi is editor of the document, so he can't rename it.
     await userApi.updateDocPermissions(doc1, {users: {'kiwi@getgrist.com': 'editors'}});
@@ -729,7 +868,8 @@ function testDocApi() {
             visibleCol: 0,
             rules: null,
             recalcWhen: 0,
-            recalcDeps: null
+            recalcDeps: null,
+            reverseCol: 0,
           }
         },
         {
@@ -750,7 +890,8 @@ function testDocApi() {
             visibleCol: 0,
             rules: null,
             recalcWhen: 0,
-            recalcDeps: null
+            recalcDeps: null,
+            reverseCol: 0,
           }
         },
         {
@@ -771,7 +912,8 @@ function testDocApi() {
             visibleCol: 0,
             rules: null,
             recalcWhen: 0,
-            recalcDeps: null
+            recalcDeps: null,
+            reverseCol: 0,
           }
         },
         {
@@ -792,7 +934,8 @@ function testDocApi() {
             visibleCol: 0,
             rules: null,
             recalcWhen: 0,
-            recalcDeps: null
+            recalcDeps: null,
+            reverseCol: 0,
           }
         },
         {
@@ -813,7 +956,8 @@ function testDocApi() {
             visibleCol: 0,
             rules: null,
             recalcWhen: 0,
-            recalcDeps: null
+            recalcDeps: null,
+            reverseCol: 0,
           }
         }
       ]
@@ -1341,7 +1485,7 @@ function testDocApi() {
     it(`GET /docs/{did}/tables/{tid}/data supports sorts and limits in ${mode}`, async function () {
       function makeQuery(sort: string[] | null, limit: number | null) {
         const url = new URL(`${serverUrl}/api/docs/${docIds.Timesheets}/tables/Table1/data`);
-        const config = configForUser('chimpy');
+        const config = makeConfig('chimpy');
         if (mode === 'url') {
           if (sort) {
             url.searchParams.append('sort', sort.join(','));
@@ -1351,10 +1495,10 @@ function testDocApi() {
           }
         } else {
           if (sort) {
-            config.headers['x-sort'] = sort.join(',');
+            config.headers!['x-sort'] = sort.join(',');
           }
           if (limit) {
-            config.headers['x-limit'] = String(limit);
+            config.headers!['x-limit'] = String(limit);
           }
         }
         return axios.get(url.href, config);
@@ -1613,7 +1757,8 @@ function testDocApi() {
               "visibleCol": 0,
               "rules": null,
               "recalcWhen": 0,
-              "recalcDeps": null
+              "recalcDeps": null,
+              reverseCol: 0,
             }
           }
         ]
@@ -2615,6 +2760,18 @@ function testDocApi() {
     await worker1.copyDoc(docId, undefined, 'copy');
   });
 
+  it("POST /docs/{did} with sourceDocId copies a document", async function () {
+    const chimpyWs = await userApi.newWorkspace({name: "Chimpy's Workspace"}, ORG_NAME);
+    const resp = await axios.post(`${serverUrl}/api/docs`, {
+      sourceDocumentId: docIds.TestDoc,
+      documentName: 'copy of TestDoc',
+      asTemplate: false,
+      workspaceId: chimpyWs
+    }, chimpy);
+    assert.equal(resp.status, 200);
+    assert.isString(resp.data);
+  });
+
   it("GET /docs/{did}/download/csv serves CSV-encoded document", async function () {
     const resp = await axios.get(`${serverUrl}/api/docs/${docIds.Timesheets}/download/csv?tableId=Table1`, chimpy);
     assert.equal(resp.status, 200);
@@ -2809,7 +2966,7 @@ function testDocApi() {
     const fakeData1 = await testUtils.readFixtureDoc('Hello.grist');
     const uploadId1 = await worker1.upload(fakeData1, '.grist');
     const resp = await axios.post(`${worker1.url}/api/workspaces/${wid}/import`, {uploadId: uploadId1},
-      configForUser('Chimpy'));
+      makeConfig('Chimpy'));
     assert.equal(resp.status, 200);
     assert.equal(resp.data.title, 'Untitled upload');
     assert.equal(typeof resp.data.id, 'string');
@@ -2859,11 +3016,7 @@ function testDocApi() {
       this.skip();
     }
     // Prepare an API for a different user.
-    const kiwiApi = new UserAPIImpl(`${home.serverUrl}/o/Fish`, {
-      headers: {Authorization: 'Bearer api_key_for_kiwi'},
-      fetch: fetch as any,
-      newFormData: () => new FormData() as any,
-    });
+    const kiwiApi = makeUserApi('Fish', 'kiwi');
     // upload something for Chimpy and something else for Kiwi.
     const worker1 = await userApi.getWorkerAPI('import');
     const fakeData1 = await testUtils.readFixtureDoc('Hello.grist');
@@ -2875,18 +3028,18 @@ function testDocApi() {
     // Check that kiwi only has access to their own upload.
     let wid = (await kiwiApi.getOrgWorkspaces('current')).find((w) => w.name === 'Big')!.id;
     let resp = await axios.post(`${worker2.url}/api/workspaces/${wid}/import`, {uploadId: uploadId1},
-      configForUser('Kiwi'));
+      makeConfig('Kiwi'));
     assert.equal(resp.status, 403);
     assert.deepEqual(resp.data, {error: "access denied"});
 
     resp = await axios.post(`${worker2.url}/api/workspaces/${wid}/import`, {uploadId: uploadId2},
-      configForUser('Kiwi'));
+      makeConfig('Kiwi'));
     assert.equal(resp.status, 200);
 
     // Check that chimpy has access to their own upload.
     wid = (await userApi.getOrgWorkspaces('current')).find((w) => w.name === 'Private')!.id;
     resp = await axios.post(`${worker1.url}/api/workspaces/${wid}/import`, {uploadId: uploadId1},
-      configForUser('Chimpy'));
+      makeConfig('Chimpy'));
     assert.equal(resp.status, 200);
   });
 
@@ -2966,11 +3119,7 @@ function testDocApi() {
     // Make two documents with same urlId
     const ws1 = (await userApi.getOrgWorkspaces('current'))[0].id;
     const doc1 = await userApi.newDoc({name: 'testdoc1', urlId: 'urlid'}, ws1);
-    const nasaApi = new UserAPIImpl(`${home.serverUrl}/o/nasa`, {
-      headers: {Authorization: 'Bearer api_key_for_chimpy'},
-      fetch: fetch as any,
-      newFormData: () => new FormData() as any,
-    });
+    const nasaApi = makeUserApi('nasa', 'chimpy');
     const ws2 = (await nasaApi.getOrgWorkspaces('current'))[0].id;
     const doc2 = await nasaApi.newDoc({name: 'testdoc2', urlId: 'urlid'}, ws2);
     try {
@@ -2997,11 +3146,7 @@ function testDocApi() {
     // Make two documents
     const ws1 = (await userApi.getOrgWorkspaces('current'))[0].id;
     const doc1 = await userApi.newDoc({name: 'testdoc1'}, ws1);
-    const nasaApi = new UserAPIImpl(`${home.serverUrl}/o/nasa`, {
-      headers: {Authorization: 'Bearer api_key_for_chimpy'},
-      fetch: fetch as any,
-      newFormData: () => new FormData() as any,
-    });
+    const nasaApi = makeUserApi('nasa', 'chimpy');
     const ws2 = (await nasaApi.getOrgWorkspaces('current'))[0].id;
     const doc2 = await nasaApi.newDoc({name: 'testdoc2'}, ws2);
     try {
@@ -3125,11 +3270,15 @@ function testDocApi() {
   });
 
   it("GET /docs/{did1}/compare/{did2} tracks changes between docs", async function () {
-    const ws1 = (await userApi.getOrgWorkspaces('current'))[0].id;
-    const docId1 = await userApi.newDoc({name: 'testdoc1'}, ws1);
-    const docId2 = await userApi.newDoc({name: 'testdoc2'}, ws1);
-    const doc1 = userApi.getDocAPI(docId1);
-    const doc2 = userApi.getDocAPI(docId2);
+    // Pass kiwi's headers as it contains both Authorization and Origin headers
+    // if run behind a proxy, so we can ensure that the Origin header check is not made.
+    const userApiServerUrl = docs.proxiedServer ? serverUrl : undefined;
+    const chimpyApi = makeUserApi(ORG_NAME, 'chimpy', { baseUrl: userApiServerUrl });
+    const ws1 = (await chimpyApi.getOrgWorkspaces('current'))[0].id;
+    const docId1 = await chimpyApi.newDoc({name: 'testdoc1'}, ws1);
+    const docId2 = await chimpyApi.newDoc({name: 'testdoc2'}, ws1);
+    const doc1 = chimpyApi.getDocAPI(docId1);
+    const doc2 = chimpyApi.getDocAPI(docId2);
 
     // Stick some content in column A so it has a defined type
     // so diffs are smaller and simpler.
@@ -3327,6 +3476,9 @@ function testDocApi() {
   });
 
   it('doc worker endpoints ignore any /dw/.../ prefix', async function () {
+    if (docs.proxiedServer) {
+      this.skip();
+    }
     const docWorkerUrl = docs.serverUrl;
     let resp = await axios.get(`${docWorkerUrl}/api/docs/${docIds.Timesheets}/tables/Table1/data`, chimpy);
     assert.equal(resp.status, 200);
@@ -3347,13 +3499,28 @@ function testDocApi() {
   });
 
   describe('webhooks related endpoints', async function () {
-      /*
-        Regression test for old _subscribe endpoint. /docs/{did}/webhooks should be used instead to subscribe
-      */
-      async function oldSubscribeCheck(requestBody: any, status: number, ...errors: RegExp[]) {
-        const resp = await axios.post(
-          `${serverUrl}/api/docs/${docIds.Timesheets}/tables/Table1/_subscribe`,
-          requestBody, chimpy
+    let serving: Serving;
+    before(async function () {
+      serving = await serveSomething(app => {
+        app.use(express.json());
+        app.post('/200', ({body}, res) => {
+          res.sendStatus(200);
+          res.end();
+        });
+      }, webhooksTestPort);
+    });
+
+    after(async function () {
+      await serving.shutdown();
+    });
+
+    /*
+      Regression test for old _subscribe endpoint. /docs/{did}/webhooks should be used instead to subscribe
+    */
+    async function oldSubscribeCheck(requestBody: any, status: number, ...errors: RegExp[]) {
+      const resp = await axios.post(
+        `${serverUrl}/api/docs/${docIds.Timesheets}/tables/Table1/_subscribe`,
+        requestBody, chimpy
         );
         assert.equal(resp.status, status);
         for (const error of errors) {
@@ -3430,7 +3597,16 @@ function testDocApi() {
       await postWebhookCheck({webhooks:[{fields: {eventTypes: ["add"], url: "https://example.com"}}]},
         400, /tableId is missing/);
       await postWebhookCheck({}, 400, /webhooks is missing/);
-
+      await postWebhookCheck({
+        webhooks: [{
+          fields: {
+            tableId: "Table1", eventTypes: ["update"], watchedColIds: ["notExisting"],
+            url: `${serving.url}/200`
+          }
+        }]
+      },
+        // this check was previously just wrong, was the test not running somehow??
+        404, /Column not found "notExisting"/);
 
     });
 
@@ -3615,7 +3791,7 @@ function testDocApi() {
 
     it("limits daily API usage", async function () {
       // Make a new document in a test product with a low daily limit
-      const api = home.makeUserApi('testdailyapilimit');
+      const api = makeUserApi('testdailyapilimit', 'chimpy');
       const workspaceId = await getWorkspaceId(api, 'TestDailyApiLimitWs');
       const docId = await api.newDoc({name: 'TestDoc1'}, workspaceId);
       const max = testDailyApiLimitFeatures.baseMaxApiUnitsPerDocumentPerDay;
@@ -3643,7 +3819,7 @@ function testDocApi() {
     it("limits daily API usage and sets the correct keys in redis", async function () {
       this.retries(3);
       // Make a new document in a free team site, currently the only real product which limits daily API usage.
-      const freeTeamApi = home.makeUserApi('freeteam');
+      const freeTeamApi = makeUserApi('freeteam', 'chimpy');
       const workspaceId = await getWorkspaceId(freeTeamApi, 'FreeTeamWs');
       const docId = await freeTeamApi.newDoc({name: 'TestDoc2'}, workspaceId);
       // Rather than making 5000 requests, set high counts directly for the current and next daily and hourly keys
@@ -3855,6 +4031,7 @@ function testDocApi() {
         tableId?: string,
         isReadyColumn?: string | null,
         eventTypes?: string[]
+        watchedColIds?: string[],
       }) {
       // Subscribe helper that returns a method to unsubscribe.
       const data = await subscribe(endpoint, docId, options);
@@ -3872,6 +4049,7 @@ function testDocApi() {
       tableId?: string,
       isReadyColumn?: string|null,
       eventTypes?: string[],
+      watchedColIds?: string[],
       name?: string,
       memo?: string,
       enabled?: boolean,
@@ -3883,10 +4061,10 @@ function testDocApi() {
           eventTypes: options?.eventTypes ?? ['add', 'update'],
           url: `${serving.url}/${endpoint}`,
           isReadyColumn: options?.isReadyColumn === undefined ? 'B' : options?.isReadyColumn,
-          ...pick(options, 'name', 'memo', 'enabled'),
+          ...pick(options, 'name', 'memo', 'enabled', 'watchedColIds'),
         }, chimpy
       );
-      assert.equal(status, 200);
+      assert.equal(status, 200, `Error during subscription: ` + JSON.stringify(data));
       return data as WebhookSubscription;
     }
 
@@ -4243,7 +4421,7 @@ function testDocApi() {
         await notFoundCalled.waitAndReset();
 
         // But the working endpoint won't be called more then once.
-        assert.isFalse(successCalled.called());
+        successCalled.assertNotCalled();
 
         // Trigger second event.
         await doc.addRows("Table1", {
@@ -4255,13 +4433,13 @@ function testDocApi() {
         assert.deepEqual(firstRow, 1);
 
         // But the working endpoint won't be called till we reset the queue.
-        assert.isFalse(successCalled.called());
+        successCalled.assertNotCalled();
 
         // Now reset the queue.
         await clearQueue(docId);
 
-        assert.isFalse(successCalled.called());
-        assert.isFalse(notFoundCalled.called());
+        successCalled.assertNotCalled();
+        notFoundCalled.assertNotCalled();
 
         // Prepare for new calls.
         successCalled.reset();
@@ -4279,7 +4457,7 @@ function testDocApi() {
         // And the situation will be the same, the working endpoint won't be called till we reset the queue, but
         // the error endpoint will be called with the third row multiple times.
         await notFoundCalled.waitAndReset();
-        assert.isFalse(successCalled.called());
+        successCalled.assertNotCalled();
 
         // Cleanup everything, we will now test request timeouts.
         await Promise.all(cleanup.map(fn => fn())).finally(() => cleanup.length = 0);
@@ -4301,7 +4479,7 @@ function testDocApi() {
         // Long will be started immediately.
         await longStarted.waitAndReset();
         // But it won't be finished.
-        assert.isFalse(longFinished.called());
+        longFinished.assertNotCalled();
         // It will be aborted.
         controller.abort();
         assert.deepEqual(await longFinished.waitAndReset(), [408, 4]);
@@ -4315,7 +4493,7 @@ function testDocApi() {
         // abort it till the end of this test.
         assert.deepEqual(await successCalled.waitAndReset(), 5);
         assert.deepEqual(await longStarted.waitAndReset(), 5);
-        assert.isFalse(longFinished.called());
+        longFinished.assertNotCalled();
 
         // Remember this controller for cleanup.
         const controller5 = controller;
@@ -4325,8 +4503,8 @@ function testDocApi() {
           B: [true],
         });
         // We are now completely stuck on the 5th row webhook.
-        assert.isFalse(successCalled.called());
-        assert.isFalse(longFinished.called());
+        successCalled.assertNotCalled();
+        longFinished.assertNotCalled();
         // Clear the queue, it will free webhooks requests, but it won't cancel long handler on the external server
         // so it is still waiting.
         assert.isTrue((await axios.delete(
@@ -4338,8 +4516,8 @@ function testDocApi() {
         assert.deepEqual(await longFinished.waitAndReset(), [408, 5]);
 
         // We won't be called for the 6th row at all, as it was stuck and the queue was purged.
-        assert.isFalse(successCalled.called());
-        assert.isFalse(longStarted.called());
+        successCalled.assertNotCalled();
+        longStarted.assertNotCalled();
 
         // Trigger next event.
         await doc.addRows("Table1", {
@@ -4350,7 +4528,7 @@ function testDocApi() {
         assert.deepEqual(await successCalled.waitAndReset(), 7);
         assert.deepEqual(await longStarted.waitAndReset(), 7);
         // But we are stuck again.
-        assert.isFalse(longFinished.called());
+        longFinished.assertNotCalled();
         // And we can abort current request from 7th row (6th row was skipped).
         controller.abort();
         assert.deepEqual(await longFinished.waitAndReset(), [408, 7]);
@@ -4393,7 +4571,7 @@ function testDocApi() {
         controller.abort();
         await longFinished.waitAndReset();
         // The second one is not called.
-        assert.isFalse(successCalled.called());
+        successCalled.assertNotCalled();
         // Triggering next event, we will get only calls to the probe (first webhook).
         await doc.addRows("Table1", {
           A: [2],
@@ -4405,6 +4583,68 @@ function testDocApi() {
 
         // Unsubscribe.
         await webhook1();
+      });
+
+      it("should call to a webhook only when columns updated are in watchedColIds if not empty", async () => {  // eslint-disable-line max-len
+        // Create a test document.
+        const ws1 = (await userApi.getOrgWorkspaces('current'))[0].id;
+        const docId = await userApi.newDoc({ name: 'testdoc5' }, ws1);
+        const doc = userApi.getDocAPI(docId);
+        await axios.post(`${serverUrl}/api/docs/${docId}/apply`, [
+          ['ModifyColumn', 'Table1', 'B', { type: 'Bool' }],
+        ], chimpy);
+
+        const modifyColumn = async (newValues: { [key: string]: any; } ) => {
+          await axios.post(`${serverUrl}/api/docs/${docId}/apply`, [
+            ['UpdateRecord', 'Table1', newRowIds[0], newValues],
+          ], chimpy);
+        };
+        const assertSuccessNotCalled = async () => {
+          successCalled.assertNotCalled();
+          successCalled.reset();
+        };
+        const assertSuccessCalled = async () => {
+          await successCalled.waitAndReset();
+        };
+
+        // Webhook with only one watchedColId.
+        const webhook1 = await autoSubscribe('200', docId, {
+          watchedColIds: ['A'], eventTypes: ['add', 'update']
+        });
+        successCalled.reset();
+        // Create record, that will call the webhook.
+        const newRowIds = await doc.addRows("Table1", {
+          A: [2],
+          B: [true],
+          C: ['c1']
+        });
+        await successCalled.waitAndReset();
+        await modifyColumn({ C: 'c2' });
+        await assertSuccessNotCalled();
+        await modifyColumn({ A: 19 });
+        await assertSuccessCalled();
+        await webhook1(); // Unsubscribe.
+
+        // Webhook with multiple watchedColIds
+        const webhook2 = await autoSubscribe('200', docId, {
+          watchedColIds: ['A', 'B'], eventTypes: ['update']
+        });
+        successCalled.reset();
+        await modifyColumn({ C: 'c3' });
+        await assertSuccessNotCalled();
+        await modifyColumn({ A: 20 });
+        await assertSuccessCalled();
+        await webhook2();
+
+        // Check that empty string in watchedColIds are ignored
+        const webhook3 = await autoSubscribe('200', docId, {
+          watchedColIds: ['A', ""], eventTypes: ['update']
+        });
+        await modifyColumn({ C: 'c4' });
+        await assertSuccessNotCalled();
+        await modifyColumn({ A: 21 });
+        await assertSuccessCalled();
+        await webhook3();
       });
 
       it("should return statistics", async () => {
@@ -4420,6 +4660,7 @@ function testDocApi() {
             id: first.webhookId,
             fields: {
               url: `${serving.url}/200`,
+              authorization: '',
               unsubscribeKey: first.unsubscribeKey,
               eventTypes: ['add', 'update'],
               enabled: true,
@@ -4427,6 +4668,7 @@ function testDocApi() {
               tableId: 'Table1',
               name: '',
               memo: '',
+              watchedColIds: [],
             }, usage : {
               status: 'idle',
               numWaiting: 0,
@@ -4437,6 +4679,7 @@ function testDocApi() {
             id: second.webhookId,
             fields: {
               url: `${serving.url}/404`,
+              authorization: '',
               unsubscribeKey: second.unsubscribeKey,
               eventTypes: ['add', 'update'],
               enabled: true,
@@ -4444,6 +4687,7 @@ function testDocApi() {
               tableId: 'Table1',
               name: '',
               memo: '',
+              watchedColIds: [],
             }, usage : {
               status: 'idle',
               numWaiting: 0,
@@ -4775,42 +5019,54 @@ function testDocApi() {
       describe('webhook update', function () {
 
         it('should work correctly', async function () {
-
-
           async function check(fields: any, status: number, error?: RegExp | string,
                                expectedFieldsCallback?: (fields: any) => any) {
 
-            let savedTableId = 'Table1';
             const origFields = {
               tableId: 'Table1',
               eventTypes: ['add'],
               isReadyColumn: 'B',
               name: 'My Webhook',
               memo: 'Sync store',
+              watchedColIds: ['A']
             };
 
             // subscribe
-            const webhook = await subscribe('foo', docId, origFields);
+            const {data} = await axios.post(
+              `${serverUrl}/api/docs/${docId}/webhooks`,
+              {
+                webhooks: [{
+                  fields: {
+                    ...origFields,
+                    url: `${serving.url}/foo`
+                  }
+                }]
+              }, chimpy
+            );
+            const webhooks = data;
 
             const expectedFields = {
               url: `${serving.url}/foo`,
-              unsubscribeKey: webhook.unsubscribeKey,
+              authorization: '',
               eventTypes: ['add'],
               isReadyColumn: 'B',
               tableId: 'Table1',
               enabled: true,
               name: 'My Webhook',
               memo: 'Sync store',
+              watchedColIds: ['A'],
             };
 
             let stats = await readStats(docId);
             assert.equal(stats.length, 1, 'stats=' + JSON.stringify(stats));
-            assert.equal(stats[0].id, webhook.webhookId);
-            assert.deepEqual(stats[0].fields, expectedFields);
+            assert.equal(stats[0].id, webhooks.webhooks[0].id);
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const {unsubscribeKey, ...fieldsWithoutUnsubscribeKey} = stats[0].fields;
+            assert.deepEqual(fieldsWithoutUnsubscribeKey, expectedFields);
 
             // update
             const resp = await axios.patch(
-              `${serverUrl}/api/docs/${docId}/webhooks/${webhook.webhookId}`, fields, chimpy
+              `${serverUrl}/api/docs/${docId}/webhooks/${webhooks.webhooks[0].id}`, fields, chimpy
             );
 
             // check resp
@@ -4818,14 +5074,13 @@ function testDocApi() {
             if (resp.status === 200) {
               stats = await readStats(docId);
               assert.equal(stats.length, 1);
-              assert.equal(stats[0].id, webhook.webhookId);
+              assert.equal(stats[0].id, webhooks.webhooks[0].id);
               if (expectedFieldsCallback) {
                 expectedFieldsCallback(expectedFields);
               }
-              assert.deepEqual(stats[0].fields, {...expectedFields, ...fields});
-              if (fields.tableId) {
-                savedTableId = fields.tableId;
-              }
+              // eslint-disable-next-line @typescript-eslint/no-unused-vars
+              const {unsubscribeKey, ...fieldsWithoutUnsubscribeKey} = stats[0].fields;
+              assert.deepEqual(fieldsWithoutUnsubscribeKey, { ...expectedFields, ...fields });
             } else {
               if (error instanceof RegExp) {
                 assert.match(resp.data.details?.userError || resp.data.error, error);
@@ -4835,7 +5090,9 @@ function testDocApi() {
             }
 
             // finally  unsubscribe
-            const unsubscribeResp = await unsubscribe(docId, webhook, savedTableId);
+            const unsubscribeResp = await axios.delete(
+              `${serverUrl}/api/docs/${docId}/webhooks/${webhooks.webhooks[0].id}`, chimpy
+            );
             assert.equal(unsubscribeResp.status, 200, JSON.stringify(pick(unsubscribeResp, ['data', 'status'])));
             stats = await readStats(docId);
             assert.equal(stats.length, 0, 'stats=' + JSON.stringify(stats));
@@ -4846,11 +5103,13 @@ function testDocApi() {
           await check({url: "http://example.com"}, 403, "Provided url is forbidden");  // not https
 
           // changing table without changing the ready column should reset the latter
-          await check({tableId: 'Table2'}, 200, '', expectedFields => expectedFields.isReadyColumn = null);
-
+          await check({tableId: 'Table2'}, 200, '', expectedFields => {
+            expectedFields.isReadyColumn = null;
+            expectedFields.watchedColIds = [];
+          });
 
           await check({tableId: 'Santa'}, 404, `Table not found "Santa"`);
-          await check({tableId: 'Table2', isReadyColumn: 'Foo'}, 200);
+          await check({tableId: 'Table2', isReadyColumn: 'Foo', watchedColIds: []}, 200);
 
           await check({eventTypes: ['add', 'update']}, 200);
           await check({eventTypes: []}, 400, "eventTypes must be a non-empty array");
@@ -4858,6 +5117,8 @@ function testDocApi() {
 
           await check({isReadyColumn: null}, 200);
           await check({isReadyColumn: "bar"}, 404, `Column not found "bar"`);
+
+          await check({authorization: 'Bearer fake-token'}, 200);
         });
 
       });
@@ -4874,16 +5135,30 @@ function testDocApi() {
         }
       });
 
-      const chimpyConfig = configForUser("Chimpy");
-      const anonConfig = configForUser("Anonymous");
-      delete chimpyConfig.headers["X-Requested-With"];
-      delete anonConfig.headers["X-Requested-With"];
+      const chimpyConfig = makeConfig("Chimpy");
+      const anonConfig = makeConfig("Anonymous");
+      delete chimpyConfig.headers!["X-Requested-With"];
+      delete anonConfig.headers!["X-Requested-With"];
+
+      let allowedOrigin;
+
+      // Target a more realistic Host than "localhost:port"
+      // (if behind a proxy, we already benefit from a custom and realistic host).
+      if (!home.proxiedServer) {
+        anonConfig.headers!.Host = chimpyConfig.headers!.Host =
+          'api.example.com';
+        allowedOrigin = 'http://front.example.com';
+      } else {
+        allowedOrigin = serverUrl;
+      }
 
       const url = `${serverUrl}/api/docs/${docId}/tables/Table1/records`;
-      const data = {records: [{fields: {}}]};
+      const data = { records: [{ fields: {} }] };
+
+      const forbiddenOrigin = 'http://evil.com';
 
       // Normal same origin requests
-      anonConfig.headers.Origin = serverUrl;
+      anonConfig.headers!.Origin = allowedOrigin;
       let response: AxiosResponse;
       for (response of [
         await axios.post(url, data, anonConfig),
@@ -4893,13 +5168,13 @@ function testDocApi() {
         assert.equal(response.status, 200);
         assert.equal(response.headers['access-control-allow-methods'], 'GET, PATCH, PUT, POST, DELETE, OPTIONS');
         assert.equal(response.headers['access-control-allow-headers'], 'Authorization, Content-Type, X-Requested-With');
-        assert.equal(response.headers['access-control-allow-origin'], serverUrl);
+        assert.equal(response.headers['access-control-allow-origin'], allowedOrigin);
         assert.equal(response.headers['access-control-allow-credentials'], 'true');
       }
 
       // Cross origin requests from untrusted origin.
       for (const config of [anonConfig, chimpyConfig]) {
-        config.headers.Origin = "https://evil.com/";
+        config.headers!.Origin = forbiddenOrigin;
         for (response of [
           await axios.post(url, data, config),
           await axios.get(url, config),
@@ -5111,12 +5386,13 @@ function setup(name: string, cb: () => Promise<void>) {
   before(async function () {
     suitename = name;
     dataDir = path.join(tmpDir, `${suitename}-data`);
+    await flushAllRedis();
     await fse.mkdirs(dataDir);
     await setupDataDir(dataDir);
     await cb();
 
     // create TestDoc as an empty doc into Private workspace
-    userApi = api = home.makeUserApi(ORG_NAME);
+    userApi = api = makeUserApi(ORG_NAME, 'chimpy');
     const wid = await getWorkspaceId(api, 'Private');
     docIds.TestDoc = await api.newDoc({name: 'TestDoc'}, wid);
   });
@@ -5129,6 +5405,7 @@ function setup(name: string, cb: () => Promise<void>) {
     // stop all servers
     await home.stop();
     await docs.stop();
+    extraHeadersForConfig = {};
   });
 }
 
@@ -5136,8 +5413,6 @@ async function getWorkspaceId(api: UserAPIImpl, name: string) {
   const workspaces = await api.getOrgWorkspaces('current');
   return workspaces.find((w) => w.name === name)!.id;
 }
-
-const webhooksTestPort = Number(process.env.WEBHOOK_TEST_PORT || 34365);
 
 async function setupDataDir(dir: string) {
   // we'll be serving Hello.grist content for various document ids, so let's make copies of it in
@@ -5156,4 +5431,13 @@ async function setupDataDir(dir: string) {
 async function flushAuth() {
   await home.testingHooks.flushAuthorizerCache();
   await docs.testingHooks.flushAuthorizerCache();
+}
+
+async function flushAllRedis() {
+  // Clear redis test database if redis is in use.
+  if (process.env.TEST_REDIS_URL) {
+    const cli = createClient(process.env.TEST_REDIS_URL);
+    await cli.flushdbAsync();
+    await cli.quitAsync();
+  }
 }

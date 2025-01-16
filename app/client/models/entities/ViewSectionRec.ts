@@ -93,8 +93,11 @@ export interface ViewSectionRec extends IRowModel<"_grist_Views_section">, RuleO
   // in which case the UI prevents various things like hiding columns or changing the widget type.
   isRaw: ko.Computed<boolean>;
 
-  tableRecordCard: ko.Computed<ViewSectionRec>
+  /** Is this table card viewsection (the one available after pressing spacebar) */
   isRecordCard: ko.Computed<boolean>;
+
+  /** Card record viewSection for associated table (might be the same section) */
+  tableRecordCard: ko.Computed<ViewSectionRec>;
 
   /** True if this section is disabled. Currently only used by Record Card sections. */
   disabled: modelUtil.KoSaveableObservable<boolean>;
@@ -460,7 +463,9 @@ export function createViewSectionRec(this: ViewSectionRec, docModel: DocModel): 
   // - Widget type description (if not grid)
   // All concatenated separated by space.
   this.defaultWidgetTitle = this.autoDispose(ko.pureComputed(() => {
-    const widgetTypeDesc = this.parentKey() !== 'record' ? `${getWidgetTypes(this.parentKey.peek() as any).label}` : '';
+    const widgetTypeDesc = this.parentKey() !== 'record'
+      ? `${getWidgetTypes(this.parentKey.peek() as any).getLabel()}`
+      : '';
     const table = this.table();
     return [
       table.tableNameDef()?.toUpperCase(), // Due to ACL this can be null.
@@ -675,7 +680,7 @@ export function createViewSectionRec(this: ViewSectionRec, docModel: DocModel): 
   //  with sharing.
   this.activeSortSpec = modelUtil.jsonObservable(this.activeSortJson, (obj: Sort.SortSpec|null) => {
     return (obj || []).filter((sortRef: Sort.ColSpec) => {
-      const colModel = docModel.columns.getRowModel(Sort.getColRef(sortRef));
+      const colModel = docModel.columns.getRowModel(Sort.getColRef(sortRef) as number /* HACK: for virtual tables */);
       return !colModel._isDeleted() && colModel.getRowId();
     });
   });
@@ -824,6 +829,10 @@ export function createViewSectionRec(this: ViewSectionRec, docModel: DocModel): 
 
   this.tableId = this.autoDispose(ko.pureComputed(() => this.table().tableId()));
   const rawSection = this.autoDispose(ko.pureComputed(() => this.table().rawViewSection()));
+  this.rulesList = modelUtil.savingComputed({
+    read: () => rawSection().rules(),
+    write: (setter, val) => setter(rawSection().rules, val)
+  });
   this.rulesCols = refListRecords(docModel.columns, ko.pureComputed(() => rawSection().rules()));
   this.rulesColsIds = ko.pureComputed(() => this.rulesCols().map(c => c.colId()));
   this.rulesStyles = modelUtil.savingComputed({

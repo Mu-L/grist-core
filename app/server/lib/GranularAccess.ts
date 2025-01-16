@@ -26,19 +26,19 @@ import { UserOverride } from 'app/common/DocListAPI';
 import { DocUsageSummary, FilteredDocUsageSummary } from 'app/common/DocUsage';
 import { normalizeEmail } from 'app/common/emails';
 import { ErrorWithCode } from 'app/common/ErrorWithCode';
-import { AclMatchInput, InfoEditor, InfoView } from 'app/common/GranularAccessClause';
-import { UserInfo } from 'app/common/GranularAccessClause';
+import { InfoEditor } from 'app/common/GranularAccessClause';
 import * as gristTypes from 'app/common/gristTypes';
 import { getSetMapValue, isNonNullish, pruneArray } from 'app/common/gutil';
+import { compilePredicateFormula, PredicateFormulaInput } from 'app/common/PredicateFormula';
 import { MetaRowRecord, SingleCell } from 'app/common/TableData';
+import { EmptyRecordView, InfoView, RecordView } from 'app/common/RecordView';
 import { canEdit, canView, isValidRole, Role } from 'app/common/roles';
+import { User } from 'app/common/User';
 import { FullUser, UserAccessData } from 'app/common/UserAPI';
-import { HomeDBManager } from 'app/gen-server/lib/HomeDBManager';
+import { HomeDBManager } from 'app/gen-server/lib/homedb/HomeDBManager';
 import { GristObjCode } from 'app/plugin/GristData';
-import { compileAclFormula } from 'app/server/lib/ACLFormula';
 import { DocClients } from 'app/server/lib/DocClients';
-import { getDocSessionAccess, getDocSessionAltSessionId, getDocSessionShare,
-         getDocSessionUser, OptDocSession } from 'app/server/lib/DocSession';
+import { OptDocSession } from 'app/server/lib/DocSession';
 import { DocStorage, REMOVE_UNUSED_ATTACHMENTS_DELAY } from 'app/server/lib/DocStorage';
 import log from 'app/server/lib/log';
 import { IPermissionInfo, MixedPermissionSetWithContext,
@@ -46,6 +46,12 @@ import { IPermissionInfo, MixedPermissionSetWithContext,
 import { TablePermissionSetWithContext } from 'app/server/lib/PermissionInfo';
 import { integerParam } from 'app/server/lib/requestUtils';
 import { getRelatedRows, getRowIdsFromDocAction } from 'app/server/lib/RowAccess';
+import {
+  getAltSessionId,
+  getDocSessionAccess,
+  getDocSessionShare,
+  getFullUser,
+} from 'app/server/lib/sessionUtils';
 import cloneDeep = require('lodash/cloneDeep');
 import fromPairs = require('lodash/fromPairs');
 import get = require('lodash/get');
@@ -112,8 +118,6 @@ const SPECIAL_ACTIONS = new Set(['InitNewDoc',
                                  'FillTransformRuleColIds',
                                  'TransformAndFinishImport',
                                  'AddView',
-                                 'CopyFromColumn',
-                                 'ConvertFromColumn',
                                  'AddHiddenColumn',
                                  'RespondToRequests',
                                 ]);
@@ -131,9 +135,7 @@ const OK_ACTIONS = new Set(['Calculate', 'UpdateCurrentTime']);
 // Only add an action to OTHER_RECOGNIZED_ACTIONS if you know access control
 // has been handled for it, or it is clear that access control can be done
 // by looking at the Create/Update/Delete permissions for the DocActions it
-// will create. For example, at the time of writing CopyFromColumn should
-// not be here, since it could read a column the user is not supposed to
-// have access rights to, and it is not handled specially.
+// will create.
 const OTHER_RECOGNIZED_ACTIONS = new Set([
   // Data actions.
   'AddRecord',
@@ -148,6 +150,11 @@ const OTHER_RECOGNIZED_ACTIONS = new Set([
   'AddOrUpdateRecord',
   'BulkAddOrUpdateRecord',
 
+  // Certain column actions are handled specially because of reads that
+  // don't fit the pattern of data actions.
+  'ConvertFromColumn',
+  'CopyFromColumn',
+
   // Groups of actions.
   'ApplyDocActions',
   'ApplyUndoActions',
@@ -158,6 +165,7 @@ const OTHER_RECOGNIZED_ACTIONS = new Set([
   'RemoveColumn',
   'RenameColumn',
   'ModifyColumn',
+  'AddReverseColumn',
 
   // Table-level schema changes.
   'AddEmptyTable',
@@ -331,11 +339,106 @@ export class GranularAccess implements GranularAccessForBundle {
     this._userAttributesMap = new WeakMap();
   }
 
-  public getUser(docSession: OptDocSession): Promise<UserInfo> {
-    return this._getUser(docSession);
+  /**
+   * Construct the UserInfo needed for evaluating rules. This also enriches the user with values
+   * created by user-attribute rules.
+   */
+  public async getUser(docSession: OptDocSession): Promise<User> {
+    const linkParameters = docSession.authorizer?.getLinkParameters() || {};
+    let access: Role | null;
+    let fullUser: FullUser | null;
+    const attrs = this._getUserAttributes(docSession);
+    access = getDocSessionAccess(docSession);
+
+    const linkId = getDocSessionShare(docSession);
+    let shareRef: number = 0;
+    if (linkId) {
+      const rowIds = this._docData.getMetaTable('_grist_Shares').filterRowIds({
+        linkId,
+      });
+      if (rowIds.length > 1) {
+        throw new Error('Share identifier is not unique');
+      }
+      if (rowIds.length === 1) {
+        shareRef = rowIds[0];
+      }
+    }
+
+    if (docSession.forkingAsOwner) {
+      // For granular access purposes, we become an owner.
+      // It is a bit of a bluff, done on the understanding that this session will
+      // never be used to edit the document, and that any edits will be done on a
+      // fork.
+      access = 'owners';
+    }
+
+    // If aclAsUserId/aclAsUser is set, then override user for acl purposes.
+    if (linkParameters.aclAsUserId || linkParameters.aclAsUser) {
+      if (access !== 'owners') { throw new ErrorWithCode('ACL_DENY', 'only an owner can override user'); }
+      if (attrs.override) {
+        // Used cached properties.
+        access = attrs.override.access;
+        fullUser = attrs.override.user;
+      } else {
+        attrs.override = await this._getViewAsUser(linkParameters);
+        fullUser = attrs.override.user;
+      }
+    } else {
+      fullUser = getFullUser(docSession);
+    }
+    const user = new User();
+    user.Access = access;
+    user.ShareRef = shareRef || null;
+    const isAnonymous = fullUser?.id === this._homeDbManager?.getAnonymousUserId() ||
+      fullUser?.id === null;
+    user.UserID = (!isAnonymous && fullUser?.id) || null;
+    user.Email = fullUser?.email || null;
+    user.Name = fullUser?.name || null;
+    // If viewed from a websocket, collect any link parameters included.
+    // TODO: could also get this from rest api access, just via a different route.
+    user.LinkKey = linkParameters;
+    // Include origin info if accessed via the rest api.
+    // TODO: could also get this for websocket access, just via a different route.
+    user.Origin = docSession.req?.get('origin') || null;
+    user.SessionID = isAnonymous ? `a${getAltSessionId(docSession)}` : `u${user.UserID}`;
+    user.IsLoggedIn = !isAnonymous;
+    user.UserRef = fullUser?.ref || null; // Empty string should be treated as null.
+
+    if (this._ruler.ruleCollection.ruleError && !this._recoveryMode) {
+      // It is important to signal that the doc is in an unexpected state,
+      // and prevent it opening.
+      throw this._ruler.ruleCollection.ruleError;
+    }
+
+    for (const clause of this._ruler.ruleCollection.getUserAttributeRules().values()) {
+      if (clause.name in user) {
+        log.warn(`User attribute ${clause.name} ignored; conflicts with an existing one`);
+        continue;
+      }
+      if (attrs.rows[clause.name]) {
+        user[clause.name] = attrs.rows[clause.name];
+        continue;
+      }
+      let rec = new EmptyRecordView();
+      let rows: TableDataAction|undefined;
+      try {
+        // Use lodash's get() that supports paths, e.g. charId of 'a.b' would look up `user.a.b`.
+        // TODO: add indexes to db.
+        rows = await this._fetchQueryFromDB({
+          tableId: clause.tableId,
+          filters: { [clause.lookupColId]: [get(user, clause.charId)] }
+        });
+      } catch (e) {
+        log.warn(`User attribute ${clause.name} failed`, e);
+      }
+      if (rows && rows[2].length > 0) { rec = new RecordView(rows, 0); }
+      user[clause.name] = rec;
+      attrs.rows[clause.name] = rec;
+    }
+    return user;
   }
 
-  public async getCachedUser(docSession: OptDocSession): Promise<UserInfo> {
+  public async getCachedUser(docSession: OptDocSession): Promise<User> {
     const access = await this._getAccess(docSession);
     return access.getUser();
   }
@@ -344,9 +447,9 @@ export class GranularAccess implements GranularAccessForBundle {
    * Represent fields from the session in an input object for ACL rules.
    * Just one field currently, "user".
    */
-  public async inputs(docSession: OptDocSession): Promise<AclMatchInput> {
+  public async inputs(docSession: OptDocSession): Promise<PredicateFormulaInput> {
     return {
-      user: await this._getUser(docSession),
+      user: await this.getUser(docSession),
       docId: this._docId
     };
   }
@@ -401,7 +504,7 @@ export class GranularAccess implements GranularAccessForBundle {
     }
     const rec = new RecordView(rows, 0);
     if (!hasExceptionalAccess) {
-      const input: AclMatchInput = {...await this.inputs(docSession), rec, newRec: rec};
+      const input: PredicateFormulaInput = {...await this.inputs(docSession), rec, newRec: rec};
       const rowPermInfo = new PermissionInfo(this._ruler.ruleCollection, input);
       const rowAccess = rowPermInfo.getTableAccess(cell.tableId).perms.read;
       if (rowAccess === 'deny') { fail(); }
@@ -480,7 +583,7 @@ export class GranularAccess implements GranularAccessForBundle {
   public async canApplyBundle() {
     if (!this._activeBundle) { throw new Error('no active bundle'); }
     const {docActions, docSession, isDirect} = this._activeBundle;
-    const currentUser = await this._getUser(docSession);
+    const currentUser = await this.getUser(docSession);
     const userIsOwner = await this.isOwner(docSession);
     if (this._activeBundle.hasDeliberateRuleChange && !userIsOwner) {
       throw new ErrorWithCode('ACL_DENY', 'Only owners can modify access rules');
@@ -560,7 +663,7 @@ export class GranularAccess implements GranularAccessForBundle {
 
       // Use the post-actions data to process the rules collection, and throw error if that fails.
       const ruleCollection = new ACLRuleCollection();
-      await ruleCollection.update(tmpDocData, {log, compile: compileAclFormula});
+      await ruleCollection.update(tmpDocData, {log, compile: compilePredicateFormula});
       if (ruleCollection.ruleError) {
         throw new ApiError(ruleCollection.ruleError.message, 400);
       }
@@ -695,7 +798,7 @@ export class GranularAccess implements GranularAccessForBundle {
     }
     const role = options.role ?? await this.getNominalAccess(docSession);
     const hasEditRole = canEdit(role);
-    if (!hasEditRole) { result.dataLimitStatus = null; }
+    if (!hasEditRole) { result.dataLimitInfo.status = null; }
     const hasFullReadAccess = await this.canReadEverything(docSession);
     if (!hasEditRole || !hasFullReadAccess) {
       result.rowCount = 'hidden';
@@ -722,7 +825,7 @@ export class GranularAccess implements GranularAccessForBundle {
     // Checks are in no particular order.
     await this._checkSimpleDataActions(docSession, actions);
     await this._checkForSpecialOrSurprisingActions(docSession, actions);
-    await this._checkPossiblePythonFormulaModification(docSession, actions);
+    await this._checkIfNeedsEarlySchemaPermission(docSession, actions);
     await this._checkDuplicateTableAccess(docSession, actions);
     await this._checkAddOrUpdateAccess(docSession, actions);
   }
@@ -816,7 +919,20 @@ export class GranularAccess implements GranularAccessForBundle {
    */
   public needEarlySchemaPermission(a: UserAction|DocAction): boolean {
     const name = a[0] as string;
-    if (name === 'ModifyColumn' || name === 'SetDisplayFormula') {
+    // ConvertFromColumn and CopyFromColumn are hard to reason
+    // about, especially since they appear in bundles with other
+    // actions. We throw up our hands a bit here, and just make
+    // sure the user has schema permissions. Today, in Grist, that
+    // gives a lot of power. If this gets narrowed down in future,
+    // we'll have to rethink this.
+    const actionNames = [
+      'ModifyColumn',
+      'SetDisplayFormula',
+      'ConvertFromColumn',
+      'CopyFromColumn',
+      'AddReverseColumn',
+    ];
+    if (actionNames.includes(name)) {
       return true;
     } else if (isDataAction(a)) {
       const tableId = getTableId(a);
@@ -1005,7 +1121,7 @@ export class GranularAccess implements GranularAccessForBundle {
   }
 
   public async getUserOverride(docSession: OptDocSession): Promise<UserOverride|undefined> {
-    await this._getUser(docSession);
+    await this.getUser(docSession);
     return this._getUserAttributes(docSession).override;
   }
 
@@ -1121,7 +1237,7 @@ export class GranularAccess implements GranularAccessForBundle {
     const linkParameters = docSession.authorizer?.getLinkParameters() || {};
     const baseAccess = getDocSessionAccess(docSession);
     if ((linkParameters.aclAsUserId || linkParameters.aclAsUser) && baseAccess === 'owners') {
-      const info = await this._getUser(docSession);
+      const info = await this.getUser(docSession);
       return info.Access;
     }
     return baseAccess;
@@ -1266,7 +1382,6 @@ export class GranularAccess implements GranularAccessForBundle {
     }
 
     await this._assertOnlyBundledWithSimpleDataActions(ADD_OR_UPDATE_RECORD_ACTIONS, actions);
-
     // Check for read access, and that we're not touching metadata.
     await applyToActionsRecursively(actions, async (a) => {
       if (!isAddOrUpdateRecordAction(a)) { return; }
@@ -1296,12 +1411,15 @@ export class GranularAccess implements GranularAccessForBundle {
     });
   }
 
-  private async _checkPossiblePythonFormulaModification(docSession: OptDocSession, actions: UserAction[]) {
+  private async _checkIfNeedsEarlySchemaPermission(docSession: OptDocSession, actions: UserAction[]) {
     // If changes could include Python formulas, then user must have
     // +S before we even consider passing these to the data engine.
     // Since we don't track rule or schema changes at this stage, we
     // approximate with the user's access rights at beginning of
     // bundle.
+    // We also check for +S in scenarios that are hard to break down
+    // in a more granular way, for example ConvertFromColumn and
+    // CopyFromColumn.
     if (scanActionsRecursively(actions, (a) => this.needEarlySchemaPermission(a))) {
       await this._assertSchemaAccess(docSession);
     }
@@ -1664,7 +1782,7 @@ export class GranularAccess implements GranularAccessForBundle {
 
     const rec = new RecordView(rowsRec, undefined);
     const newRec = new RecordView(rowsNewRec, undefined);
-    const input: AclMatchInput = {...await this.inputs(docSession), rec, newRec};
+    const input: PredicateFormulaInput = {...await this.inputs(docSession), rec, newRec};
 
     const [, tableId, , colValues] = action;
     let filteredColValues: ColValues | BulkColValues | undefined | null = null;
@@ -1746,7 +1864,7 @@ export class GranularAccess implements GranularAccessForBundle {
                                   colId?: string): Promise<number[]> {
     const ruler = await this._getRuler(cursor);
     const rec = new RecordView(data, undefined);
-    const input: AclMatchInput = {...await this.inputs(cursor.docSession), rec};
+    const input: PredicateFormulaInput = {...await this.inputs(cursor.docSession), rec};
 
     const [, tableId, rowIds] = data;
     const toRemove: number[] = [];
@@ -1837,105 +1955,6 @@ export class GranularAccess implements GranularAccessForBundle {
         throw new ErrorWithCode('NEED_RELOAD', 'document needs reload, user attributes changed');
       }
     }
-  }
-
-  /**
-   * Construct the UserInfo needed for evaluating rules. This also enriches the user with values
-   * created by user-attribute rules.
-   */
-  private async _getUser(docSession: OptDocSession): Promise<UserInfo> {
-    const linkParameters = docSession.authorizer?.getLinkParameters() || {};
-    let access: Role | null;
-    let fullUser: FullUser | null;
-    const attrs = this._getUserAttributes(docSession);
-    access = getDocSessionAccess(docSession);
-
-    const linkId = getDocSessionShare(docSession);
-    let shareRef: number = 0;
-    if (linkId) {
-      const rowIds = this._docData.getMetaTable('_grist_Shares').filterRowIds({
-        linkId,
-      });
-      if (rowIds.length > 1) {
-        throw new Error('Share identifier is not unique');
-      }
-      if (rowIds.length === 1) {
-        shareRef = rowIds[0];
-      }
-    }
-
-    if (docSession.forkingAsOwner) {
-      // For granular access purposes, we become an owner.
-      // It is a bit of a bluff, done on the understanding that this session will
-      // never be used to edit the document, and that any edits will be done on a
-      // fork.
-      access = 'owners';
-    }
-
-    // If aclAsUserId/aclAsUser is set, then override user for acl purposes.
-    if (linkParameters.aclAsUserId || linkParameters.aclAsUser) {
-      if (access !== 'owners') { throw new ErrorWithCode('ACL_DENY', 'only an owner can override user'); }
-      if (attrs.override) {
-        // Used cached properties.
-        access = attrs.override.access;
-        fullUser = attrs.override.user;
-      } else {
-        attrs.override = await this._getViewAsUser(linkParameters);
-        fullUser = attrs.override.user;
-      }
-    } else {
-      fullUser = getDocSessionUser(docSession);
-    }
-    const user = new User();
-    user.Access = access;
-    user.ShareRef = shareRef || null;
-    const isAnonymous = fullUser?.id === this._homeDbManager?.getAnonymousUserId() ||
-      fullUser?.id === null;
-    user.UserID = (!isAnonymous && fullUser?.id) || null;
-    user.Email = fullUser?.email || null;
-    user.Name = fullUser?.name || null;
-    // If viewed from a websocket, collect any link parameters included.
-    // TODO: could also get this from rest api access, just via a different route.
-    user.LinkKey = linkParameters;
-    // Include origin info if accessed via the rest api.
-    // TODO: could also get this for websocket access, just via a different route.
-    user.Origin = docSession.req?.get('origin') || null;
-    user.SessionID = isAnonymous ? `a${getDocSessionAltSessionId(docSession)}` : `u${user.UserID}`;
-    user.IsLoggedIn = !isAnonymous;
-    user.UserRef = fullUser?.ref || null; // Empty string should be treated as null.
-
-    if (this._ruler.ruleCollection.ruleError && !this._recoveryMode) {
-      // It is important to signal that the doc is in an unexpected state,
-      // and prevent it opening.
-      throw this._ruler.ruleCollection.ruleError;
-    }
-
-    for (const clause of this._ruler.ruleCollection.getUserAttributeRules().values()) {
-      if (clause.name in user) {
-        log.warn(`User attribute ${clause.name} ignored; conflicts with an existing one`);
-        continue;
-      }
-      if (attrs.rows[clause.name]) {
-        user[clause.name] = attrs.rows[clause.name];
-        continue;
-      }
-      let rec = new EmptyRecordView();
-      let rows: TableDataAction|undefined;
-      try {
-        // Use lodash's get() that supports paths, e.g. charId of 'a.b' would look up `user.a.b`.
-        // TODO: add indexes to db.
-        rows = await this._fetchQueryFromDB({
-          tableId: clause.tableId,
-          filters: { [clause.lookupColId]: [get(user, clause.charId)] }
-        });
-      } catch (e) {
-        log.warn(`User attribute ${clause.name} failed`, e);
-      }
-      if (rows && rows[2].length > 0) { rec = new RecordView(rows, 0); }
-      user[clause.name] = rec;
-      attrs.rows[clause.name] = rec;
-    }
-    return user;
   }
 
   /**
@@ -2561,7 +2580,7 @@ export class GranularAccess implements GranularAccessForBundle {
         }
       }
       const rec = rows ? new RecordView(rows, 0) : undefined;
-      const input: AclMatchInput = {...inputs, rec, newRec: rec};
+      const input: PredicateFormulaInput = {...inputs, rec, newRec: rec};
       const rowPermInfo = new PermissionInfo(ruler.ruleCollection, input);
       const rowAccess = rowPermInfo.getTableAccess(cell.tableId).perms.read;
       if (rowAccess === 'deny') { return false; }
@@ -2584,7 +2603,7 @@ export class GranularAccess implements GranularAccessForBundle {
   /**
    * Tests if the user can modify cell's data.
    */
-  private async _canApplyCellActions(currentUser: UserInfo, userIsOwner: boolean) {
+  private async _canApplyCellActions(currentUser: User, userIsOwner: boolean) {
     // Owner can modify all comments, without exceptions.
     if (userIsOwner) {
       return;
@@ -2635,7 +2654,11 @@ export class Ruler {
    * Update granular access from DocData.
    */
   public async update(docData: DocData) {
-    await this.ruleCollection.update(docData, {log, compile: compileAclFormula, enrichRulesForImplementation: true});
+    await this.ruleCollection.update(docData, {
+      log,
+      compile: compilePredicateFormula,
+      enrichRulesForImplementation: true,
+    });
 
     // Also clear the per-docSession cache of rule evaluations.
     this.clearCache();
@@ -2651,8 +2674,8 @@ export class Ruler {
 }
 
 export interface RulerOwner {
-  getUser(docSession: OptDocSession): Promise<UserInfo>;
-  inputs(docSession: OptDocSession): Promise<AclMatchInput>;
+  getUser(docSession: OptDocSession): Promise<User>;
+  inputs(docSession: OptDocSession): Promise<PredicateFormulaInput>;
 }
 
 /**
@@ -2683,36 +2706,6 @@ interface ActionCursor {
                               // DocActions, for access control purposes.
                               // Used for referencing a cache of intermediate
                               // access control state.
-}
-
-/**
- * A row-like view of TableDataAction, which is columnar in nature.  If index value
- * is undefined, acts as an EmptyRecordRow.
- */
-export class RecordView implements InfoView {
-  public constructor(public data: TableDataAction, public index: number|undefined) {
-  }
-
-  public get(colId: string): CellValue {
-    if (this.index === undefined) { return null; }
-    if (colId === 'id') {
-      return this.data[2][this.index];
-    }
-    return this.data[3][colId]?.[this.index];
-  }
-
-  public has(colId: string) {
-    return colId === 'id' || colId in this.data[3];
-  }
-
-  public toJSON() {
-    if (this.index === undefined) { return {}; }
-    const results: {[key: string]: any} = {};
-    for (const key of Object.keys(this.data[3])) {
-      results[key] = this.data[3][key]?.[this.index];
-    }
-    return results;
-  }
 }
 
 /**
@@ -2760,11 +2753,6 @@ class RecordEditor implements InfoEditor {
     }
     return results;
   }
-}
-
-class EmptyRecordView implements InfoView {
-  public get(colId: string): CellValue { return null; }
-  public toJSON() { return {}; }
 }
 
 /**
@@ -2840,7 +2828,7 @@ class CellAccessHelper {
   private _tableAccess: Map<string, boolean> = new Map();
   private _rowPermInfo: Map<string, Map<number, PermissionInfo>> = new Map();
   private _rows: Map<string, TableDataAction> = new Map();
-  private _inputs!: AclMatchInput;
+  private _inputs!: PredicateFormulaInput;
 
   constructor(
     private _granular: GranularAccess,
@@ -2864,7 +2852,7 @@ class CellAccessHelper {
         for(const [idx, rowId] of rows[2].entries()) {
           if (rowIds.has(rowId) === false) { continue; }
           const rec = new RecordView(rows, idx);
-          const input: AclMatchInput = {...this._inputs, rec, newRec: rec};
+          const input: PredicateFormulaInput = {...this._inputs, rec, newRec: rec};
           const rowPermInfo = new PermissionInfo(this._ruler.ruleCollection, input);
           if (!this._rowPermInfo.has(tableId)) {
             this._rowPermInfo.set(tableId, new Map());
@@ -3222,47 +3210,6 @@ export function filterColValues(action: DataAction,
   }
   // Return all actions, in a consistent order for test purposes.
   return [action, ...[...parts.keys()].sort().map(key => parts.get(key)!)];
-}
-
-/**
- * Information about a user, including any user attributes.
- *
- * Serializes into a more compact JSON form that excludes full
- * row data, only keeping user info and table/row ids for any
- * user attributes.
- *
- * See `user.py` for the sandbox equivalent that deserializes objects of this class.
- */
-export class User implements UserInfo {
-  public Name: string | null = null;
-  public UserID: number | null = null;
-  public Access: Role | null = null;
-  public Origin: string | null = null;
-  public LinkKey: Record<string, string | undefined> = {};
-  public Email: string | null = null;
-  public SessionID: string | null = null;
-  public UserRef: string | null = null;
-  public ShareRef: number | null = null;
-  [attribute: string]: any;
-
-  constructor(_info: Record<string, unknown> = {}) {
-    Object.assign(this, _info);
-  }
-
-  public toJSON() {
-    const results: {[key: string]: any} = {};
-    for (const [key, value] of Object.entries(this)) {
-      if (value instanceof RecordView) {
-        // Only include the table id and first matching row id.
-        results[key] = [getTableId(value.data), value.get('id')];
-      } else if (value instanceof EmptyRecordView) {
-        results[key] = null;
-      } else {
-        results[key] = value;
-      }
-    }
-    return results;
-  }
 }
 
 export function validTableIdString(tableId: any): string {

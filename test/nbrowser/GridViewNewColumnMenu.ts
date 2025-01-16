@@ -262,7 +262,8 @@ describe('GridViewNewColumnMenu', function () {
           // Wait for the side panel animation.
           await gu.waitForSidePanel();
           //check if right menu is opened on column section
-          assert.isTrue(await driver.findWait('.test-right-tab-field', 1000).isDisplayed());
+          await gu.waitForSidePanel();
+          assert.isTrue(await driver.find('.test-right-tab-field').isDisplayed());
           await gu.toggleSidePanel("right", "close");
           await gu.undo(1);
         });
@@ -340,6 +341,13 @@ describe('GridViewNewColumnMenu', function () {
 
   describe('create formula column', function(){
     revertThis();
+
+    before(async function() {
+      // Previous test runs in a smaller screen. It restores the window, but it's hard to know
+      // when all the resizing has taken effect, and easier to just reload the doc.
+      await gu.reloadDoc();
+    });
+
     it('should show "create formula column" option with tooltip', async function () {
       // open add new colum menu
       await clickAddColumn();

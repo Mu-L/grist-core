@@ -18,7 +18,7 @@ import { AccessLevel } from 'app/common/CustomWidget';
 import { decodeUrl } from 'app/common/gristUrls';
 import { FullUser, UserProfile } from 'app/common/LoginSessionAPI';
 import { resetOrg } from 'app/common/resetOrg';
-import { UserAction } from 'app/common/DocActions';
+import { DocAction, UserAction } from 'app/common/DocActions';
 import { TestState } from 'app/common/TestState';
 import { Organization as APIOrganization, DocStateComparison,
          UserAPI, UserAPIImpl, Workspace } from 'app/common/UserAPI';
@@ -31,7 +31,8 @@ import { GristWebDriverUtils, PageWidgetPickerOptions,
          WindowDimensions as WindowDimensionsBase } from 'test/nbrowser/gristWebDriverUtils';
 import { HomeUtil } from 'test/nbrowser/homeUtil';
 import { server } from 'test/nbrowser/testServer';
-import { Cleanup } from 'test/nbrowser/testUtils';
+import type { Cleanup } from 'test/nbrowser/testUtils';
+import { fetchScreenshotAndLogs } from 'test/nbrowser/webdriverUtils';
 import * as testUtils from 'test/server/testUtils';
 import type { AssertionError } from 'assert';
 import axios from 'axios';
@@ -235,7 +236,7 @@ export async function getDocWorkerUrl(): Promise<string> {
 }
 
 export async function waitForUrl(pattern: RegExp|string, waitMs: number = 2000) {
-  await driver.wait(() => testCurrentUrl(pattern), waitMs);
+  await driver.wait(() => testCurrentUrl(pattern), waitMs, `waiting for url ${pattern}`);
 }
 
 
@@ -260,6 +261,50 @@ export function getSection(sectionOrTitle: string|WebElement): WebElement|WebEle
   if (typeof sectionOrTitle !== 'string') { return sectionOrTitle; }
   return driver.findContent(`.test-viewsection-title`, new RegExp("^" + escapeRegExp(sectionOrTitle) + "$", 'i'))
     .findClosest('.viewsection_content');
+}
+
+/**
+ * Detaches section from the layout. Used for manipulating sections in the layout.
+ */
+export async function detachFromLayout(section?: string) {
+  section ??= await getActiveSectionTitle();
+    const handle = getSection(section).find('.viewsection_drag_indicator');
+    await driver.withActions((actions) => actions
+      .move({origin: handle}));
+    await driver.withActions((actions) => actions
+      .move({origin: handle, x : 1}) // This is needed to show the drag element.
+      .press());
+  await driver.withActions(actions => actions.move({origin: handle, ...{x : 10, y: 10}}));
+  return {
+    /** Moves this leave over another section + offset. */
+    async moveTo(otherSection: string, offset?: {x?: number, y?: number}) {
+      const otherSectionElement = await getSection(otherSection).find('.viewsection_drag_indicator');
+      await driver.withActions(actions => actions.move({
+        origin: otherSectionElement,
+        ...offset
+      }));
+      return this;
+    },
+    /** Releases the dragged section. */
+    async release() {
+      await driver.withActions(actions => actions.release());
+      return this;
+    },
+    /**
+     * Waits for Grist to save this section. The save is debounced, so we need to wait
+     * for couple of events.
+     */
+    async waitForSave() {
+      // Wait for the test class that indicates we have pending save.
+      await driver.findWait(".test-viewLayout-save-pending", 100);
+      // Then wait for that class to be removed (which means Grist has started saving editor).
+      await waitToPass(async () => {
+        assert.isFalse(await driver.find(".test-viewLayout-save-pending").isPresent());
+      });
+      // And wait for the server to process.
+      await waitForServer();
+    }
+  };
 }
 
 /**
@@ -339,6 +384,31 @@ export async function getVisibleGridCells<T>(
   const selector = `.gridview_data_scroll .record:not(.column_names) .field:nth-child(${colIndex + 1})`;
   const fields = mapper ? await sectionElem.findAll(selector, mapper) : await sectionElem.findAll(selector);
   return rowNums.map((n) => fields[visibleRowNums.indexOf(n)]);
+}
+
+/**
+ * Checks if visible section with a grid contains the given data.
+ * Data is in form of:
+ * [0, "ColA", "ColB"]
+ * [1, "Val",  "1"] // cells are strings
+ * [2, "Val2", "2"]
+ */
+export async function assertGridData(section: string, data: any[][]) {
+  // Data is in form of
+  // [0, "ColA", "ColB"]
+  // [1, "Val",  1]
+
+  const rowIndices = data.slice(1).map((row: number[]) => row[0]);
+  const columnNames = data[0].slice(1);
+
+  for(const col of columnNames) {
+    const colIndex = columnNames.indexOf(col) + 1;
+    const colValues = data.slice(1).map((row: string[]) => row[colIndex]);
+    assert.deepEqual(
+      await getVisibleGridCells(col, rowIndices, section),
+      colValues
+    );
+  }
 }
 
 /**
@@ -537,8 +607,13 @@ export function getColumnHeader(colOrColOptions: string|IColHeader): WebElementP
     sectionElem.findContent('.column_name .kf_elabel_text', exactMatch(col)).findClosest('.column_name'));
 }
 
+export function getSelectedColumn() {
+  return driver.find('.active_section .column_name.selected');
+}
+
 export async function getColumnNames() {
-  return (await driver.findAll('.column_name', el => el.getText()))
+  const section = await driver.findWait('.active_section', 4000);
+  return (await section.findAll('.column_name', el => el.getText()))
     .filter(name => name !== '+');
 }
 
@@ -825,8 +900,23 @@ export async function loadDoc(relPath: string, wait: boolean = true): Promise<vo
   if (wait) { await waitForDocToLoad(); }
 }
 
-export async function loadDocMenu(relPath: string, wait: boolean = true): Promise<void> {
+/**
+ * Load a DocMenu on a site.
+ *
+ * If loading for a potentially first-time user, you may give 'skipOnboarding' for second
+ * argument to skip the onboarding flow, if it gets shown.
+ */
+export async function loadDocMenu(relPath: string, wait: boolean|'skipOnboarding' = true): Promise<void> {
   await driver.get(`${server.getHost()}${relPath}`);
+  if (wait === 'skipOnboarding') {
+    const first = await Promise.race([
+      driver.findWait('.test-onboarding-page', 2000),
+      driver.findWait('.test-dm-doclist', 2000),
+    ]);
+    if (await first.matches('.test-onboarding-page')) {
+      await skipOnboarding();
+    }
+  }
   if (wait) { await waitForDocMenuToLoad(); }
 }
 
@@ -889,7 +979,7 @@ export async function importFileDialog(filePath: string): Promise<void> {
     await driver.findContent('.test-dp-import-option', /Import from file/i).doClick();
   });
   await driver.findWait('.test-importer-dialog', 5000);
-  await waitForServer(10_000);
+  await waitForServer(15_000);
 }
 
 /**
@@ -1012,10 +1102,17 @@ export async function waitForLabelInput(): Promise<void> {
 /**
  * Sends UserActions using client api from the browser.
  */
-export async function sendActions(actions: UserAction[]) {
+export async function sendActions(actions: (DocAction|UserAction)[]) {
   await driver.manage().setTimeouts({
     script: 1000 * 2, /* 2 seconds, default is 0.5s */
   });
+
+  // Make quick test that we have a list of actions not just a single action, by checking
+  // if the first element is an array.
+  if (actions.length && !Array.isArray(actions[0])) {
+    throw new Error('actions argument should be a list of actions, not a single action');
+  }
+
   const result = await driver.executeAsyncScript(`
     const done = arguments[arguments.length - 1];
     const prom = gristDocPageModel.gristDoc.get().docModel.docData.sendActions(${JSON.stringify(actions)});
@@ -1058,6 +1155,14 @@ export async function hideBanners() {
   await driver.executeScript(`const style = document.createElement('style');
     style.innerHTML = ${JSON.stringify(style)};
     document.head.appendChild(style);`);
+}
+
+export async function assertBannerText(text: string | null) {
+  if (text === null) {
+    assert.isFalse(await driver.find('.test-banner-element').isPresent());
+  } else {
+    assert.equal(await driver.findWait('.test-doc-usage-banner-text', 2000).getText(), text);
+  }
 }
 
 /**
@@ -1168,6 +1273,27 @@ export async function addNewPage(
 
   // wait new page to be selected
   await driver.wait(async () => (await driver.getCurrentUrl()) !== url, 2000);
+}
+
+export async function duplicatePage(name: string|RegExp, newName?: string) {
+  await openPageMenu(name);
+  await driver.find('.test-docpage-duplicate').click();
+
+  if (newName) {
+    // Input will select text on focus, which can alter the text we enter,
+    // so make sure we type correct value.
+    await waitToPass(async () => {
+      const input = driver.find('.test-modal-dialog input');
+      await input.click();
+      await selectAll();
+      await driver.sendKeys(newName);
+      assert.equal(await input.value(), newName);
+    });
+  }
+
+  await driver.find('.test-modal-confirm').click();
+  await driver.findContentWait('.test-docpage-label', newName ?? /copy/, 6000);
+  await waitForServer();
 }
 
 export async function openAddWidgetToPage() {
@@ -1382,8 +1508,16 @@ export function revertChanges(test: () => Promise<void>, invariant: () => any = 
 export async function redo(optCount: number = 1, optTimeout?: number) {
   for (let i = 0; i < optCount; ++i) {
     await driver.find('.test-redo').doClick();
+    await waitForServer(optTimeout);
   }
   await waitForServer(optTimeout);
+}
+
+export async function redoAll() {
+  const isActive = () => driver.find('.test-redo').matches('[class*="disabled"]').then((v) => !v);
+  while (await isActive()) {
+    await redo();
+  }
 }
 
 /**
@@ -1406,7 +1540,10 @@ export async function openWidgetPanel(tab: 'widget'|'sortAndFilter'|'data' = 'wi
 /**
  * Opens a Creator Panel on Widget/Table settings tab.
  */
- export async function openColumnPanel() {
+ export async function openColumnPanel(col?: string|number) {
+  if (col !== undefined) {
+    await getColumnHeader({col}).click();
+  }
   await toggleSidePanel('right', 'open');
   await driver.find('.test-right-tab-field').click();
 }
@@ -1694,7 +1831,17 @@ export async function selectAllKey() {
  * Send keys, with support for Key.chord(), similar to driver.sendKeys(). Note that while
  * elem.sendKeys() supports Key.chord(...), driver.sendKeys() does not. This is a replacement.
  */
-export async function sendKeys(...keys: string[]) {
+export async function sendKeys(...keys: string[]): Promise<void>
+/**
+ * Send keys with a pause between each key.
+ */
+export async function sendKeys(interval: number, ...keys: string[]): Promise<void>
+export async function sendKeys(...args: (string|number)[]) {
+  let interval = 0;
+  if (typeof args[0] === 'number') {
+    interval = args.shift() as number;
+  }
+  const keys = args as string[];
   // tslint:disable-next-line:max-line-length
   // Implementation follows the description of WebElement.sendKeys functionality at https://github.com/SeleniumHQ/selenium/blob/2f7727c314f943582f9f1b2a7e4d77ebdd64bdd3/javascript/node/selenium-webdriver/lib/webdriver.js#L2146
   await driver.withActions((a) => {
@@ -1709,9 +1856,19 @@ export async function sendKeys(...keys: string[]) {
         } else {
           a.sendKeys(key);
         }
+        if (interval) {
+          a.pause(interval);
+        }
       }
     }
   });
+}
+
+/**
+ * An default ovveride for sendKeys that sends keys slowly, suitable for formula editor.
+ */
+export async function sendKeysSlowly(...keys: string[]) {
+  return await sendKeys(10, ...keys);
 }
 
 /**
@@ -1774,6 +1931,34 @@ export async function editOrgAcls(): Promise<void> {
   await driver.findWait('.test-user-icon', 3000).click();
   await driver.findWait('.test-dm-org-access', 3000).click();
   await driver.findWait('.test-um-members', 3000);
+}
+
+export async function addUser(email: string|string[], role?: 'Owner'|'Viewer'|'Editor'): Promise<void> {
+  await driver.findWait('.test-user-icon', 5000).click();
+  await driver.find('.test-dm-org-access').click();
+  await driver.findWait('.test-um-members', 500);
+  const orgInput = await driver.find('.test-um-member-new input');
+
+  const emails = Array.isArray(email) ? email : [email];
+  for(const e of emails) {
+    await orgInput.sendKeys(e, Key.ENTER);
+    if (role && role !== 'Viewer') {
+      await driver.findContentWait('.test-um-member', e, 1000).find('.test-um-member-role').click();
+      await driver.findContent('.test-um-role-option', role ?? 'Viewer').click();
+    }
+  }
+  await driver.find('.test-um-confirm').click();
+  await driver.wait(async () => !await driver.find('.test-um-members').isPresent(), 500);
+}
+
+export async function removeUser(email: string): Promise<void> {
+  await driver.findWait('.test-user-icon', 5000).click();
+  await driver.find('.test-dm-org-access').click();
+  await driver.findWait('.test-um-members', 500);
+  const kiwiRow = await driver.findContent('.test-um-member', email);
+  await kiwiRow.find('.test-um-member-delete').click();
+  await driver.find('.test-um-confirm').click();
+  await driver.wait(async () => !await driver.find('.test-um-members').isPresent(), 500);
 }
 
 /**
@@ -1941,9 +2126,10 @@ export enum TestUserEnum {
   support = 'support',
 }
 export type TestUser = keyof typeof TestUserEnum;     // 'user1' | 'user2' | ...
+export interface UserData { email: string, name: string }
 
 // Get name and email for the given test user.
-export function translateUser(userName: TestUser): {email: string, name: string} {
+export function translateUser(userName: TestUser): UserData {
   if (userName === 'anon') {
     return {email: 'anon@getgrist.com', name: 'Anonymous'};
   }
@@ -2012,8 +2198,11 @@ export class Session {
   }
 
   // Return a session configured for the current session's site but a different user.
-  public user(userName: TestUser = 'user1') {
-    return new Session({...this.settings, ...translateUser(userName)});
+  public user(userName?: TestUser): Session
+  public user(user: UserData): Session
+  public user(arg: TestUser|UserData = 'user1') {
+    const data = typeof arg === 'string' ? translateUser(arg) : arg;
+    return new Session({...this.settings, ...data});
   }
 
   // Return a session configured for the current session's site and anonymous access.
@@ -2030,7 +2219,6 @@ export class Session {
                                 freshAccount?: boolean,
                                 isFirstLogin?: boolean,
                                 showTips?: boolean,
-                                skipTutorial?: boolean, // By default true
                                 userName?: string,
                                 email?: string,
                                 retainExistingLogin?: boolean}) {
@@ -2054,11 +2242,6 @@ export class Session {
     }
     await server.simulateLogin(this.settings.name, this.settings.email, this.settings.orgDomain,
                                {isFirstLogin: false, cacheCredentials: true, ...options});
-
-    if (options?.skipTutorial ?? true) {
-      await dismissTutorialCard();
-    }
-
     return this;
   }
 
@@ -2097,17 +2280,20 @@ export class Session {
   }
 
   // Load a DocMenu on a site.
-  // If loading for a potentially first-time user, you may give 'skipWelcomeQuestions' for second
-  // argument to dismiss the popup with welcome questions, if it gets shown.
-  public async loadDocMenu(relPath: string, wait: boolean|'skipWelcomeQuestions' = true) {
+  // If loading for a potentially first-time user, you may give 'skipOnboarding' for second
+  // argument to skip the onboarding flow, if it gets shown.
+  public async loadDocMenu(relPath: string, wait: boolean|'skipOnboarding' = true) {
     await this.loadRelPath(relPath);
-    if (wait) { await waitForDocMenuToLoad(); }
-
-    if (wait === 'skipWelcomeQuestions') {
-      // When waitForDocMenuToLoad() returns, welcome questions should also render, so that we
-      // don't need to wait extra for them.
-      await skipWelcomeQuestions();
+    if (wait === 'skipOnboarding') {
+      const first = await Promise.race([
+        driver.findWait('.test-onboarding-page', 2000),
+        driver.findWait('.test-dm-doclist', 2000),
+      ]);
+      if (await first.matches('.test-onboarding-page')) {
+        await skipOnboarding();
+      }
     }
+    if (wait) { await waitForDocMenuToLoad(); }
   }
 
   public async loadRelPath(relPath: string) {
@@ -2302,6 +2488,15 @@ export function setFillColor(color: string) {
   return setColor(driver.find('.test-fill-input'), color);
 }
 
+export async function applyStyle() {
+  await driver.find('.test-colors-save').click();
+  await waitForServer();
+}
+
+export function getStyleRuleAt(nr: number) {
+  return driver.find(`.test-widget-style-conditional-rule-${nr}`);
+}
+
 export async function styleRulesCount() {
   const rules = await driver.findAll('.test-widget-style-conditional-rule');
   return rules.length;
@@ -2341,13 +2536,16 @@ export function openHeaderColorPicker() {
   return driver.find('.test-header-color-select .test-color-select').click();
 }
 
-export async function assertHeaderTextColor(col: string, color: string) {
-  await assertTextColor(await getColumnHeader(col), color);
+export async function assertHeaderTextColor(col: string|WebElement, color: string) {
+  const element = typeof col === 'string' ? await getColumnHeader(col) : col;
+  await assertTextColor(element, color);
 }
 
-export async function assertHeaderFillColor(col: string, color: string) {
-  await assertFillColor(await getColumnHeader(col), color);
+export async function assertHeaderFillColor(col: string|WebElement, color: string) {
+  const element = typeof col === 'string' ? await getColumnHeader(col) : col;
+  await assertFillColor(element, color);
 }
+
 
 /**
  * Opens a cell color picker, either the default one or the one for a specific style rule.
@@ -2514,7 +2712,7 @@ export async function addSupportUserIfPossible() {
 /**
  * Adds samples to the Examples & Templates page.
  */
-async function addSamples() {
+async function addSamples(includeTutorial: boolean) {
   await addSupportUserIfPossible();
   const homeApi = createHomeApi('support', 'docs');
 
@@ -2581,6 +2779,27 @@ async function addSamples() {
       'anon@getgrist.com': 'viewers',
     }});
   }
+
+  if (includeTutorial) {
+    await templatesApi.newWorkspace({name: 'Tutorials'}, 'current');
+    const tutorialDocId = (await importFixturesDoc('support', 'templates', 'Tutorials',
+      'Grist Basics.grist', {load: false, newName: 'Grist Basics.grist'})).id;
+    await templatesApi.updateDoc(
+      tutorialDocId,
+      {
+        type: 'tutorial',
+        options: {
+          description: 'Learn Grist fast with a hands-on tutorial that covers the basics.',
+          icon: 'https://grist-static.com/icons/grist-basics.png',
+        },
+        urlId: 'grist-basics',
+      },
+    );
+    await homeApi.updateDocPermissions(tutorialDocId, {users: {
+      'everyone@getgrist.com': 'viewers',
+      'anon@getgrist.com': 'viewers',
+    }});
+  }
 }
 
 /**
@@ -2596,9 +2815,9 @@ function removeTemplatesOrg() {
  * "Examples & Templates" page in before(), and remove added samples
  * in after().
  */
-export function addSamplesForSuite() {
+export function addSamplesForSuite(includeTutorial = false) {
   before(async function() {
-    await addSamples();
+    await addSamples(includeTutorial);
   });
 
   after(async function() {
@@ -2607,11 +2826,11 @@ export function addSamplesForSuite() {
 }
 
 export async function openAccountMenu() {
-  await driver.findWait('.test-dm-account', 1000).click();
+  await driver.findWait('.test-dm-account', 2000).click();
   // Since the AccountWidget loads orgs and the user data asynchronously, the menu
   // can expand itself causing the click to land on a wrong button.
   await waitForServer();
-  await driver.findWait('.test-site-switcher-org', 1000);
+  await driver.findWait('.test-site-switcher-org', 2000);
   await driver.sleep(250);  // There's still some jitter (scroll-bar? other user accounts?)
 }
 
@@ -2819,23 +3038,34 @@ export async function getEnabledOptions(): Promise<SortOption[]> {
  * Runs action in a separate tab, closing the tab after.
  * In case of an error tab is not closed, consider using cleanupExtraWindows
  * on whole test suite if needed.
+ *
+ * If {test: this.test} is given in options, we will additionally record a screenshot and driver
+ * logs, named using the test name, before opening the new tab, and before and after closing it.
  */
-export async function onNewTab(action: () => Promise<void>) {
+export async function onNewTab(action: () => Promise<void>, options?: {test?: Mocha.Runnable}) {
   const currentTab = await driver.getWindowHandle();
   await driver.executeScript("window.open('about:blank', '_blank')");
   const tabs = await driver.getAllWindowHandles();
   const newTab = tabs[tabs.length - 1];
+  const test = options?.test;
+  if (test) { await fetchScreenshotAndLogs(test); }
   await driver.switchTo().window(newTab);
   try {
     await action();
+  } catch (e) {
+    console.warn("onNewTab cleaning up tab after error", e);
+    throw e;
   } finally {
+    if (test) { await fetchScreenshotAndLogs(test); }
     const newCurrentTab = await driver.getWindowHandle();
     if (newCurrentTab === newTab) {
       await driver.close();
       await driver.switchTo().window(currentTab);
+      console.log("onNewTab returned to original tab");
     } else {
       console.log("onNewTab not cleaning up because is not on expected tab");
     }
+    if (test) { await fetchScreenshotAndLogs(test); }
   }
 }
 
@@ -3062,21 +3292,6 @@ export async function getFilterMenuState(): Promise<FilterMenuValue[]> {
 }
 
 /**
- * Dismisses any tutorial card that might be active.
- */
-export async function dismissTutorialCard() {
-  // If there is something in our way, we can't do it.
-  if (await driver.find('.test-welcome-questions').isPresent()) {
-    return;
-  }
-  if (await driver.find('.test-tutorial-card-close').isPresent()) {
-    if (await driver.find('.test-tutorial-card-close').isDisplayed()) {
-      await driver.find('.test-tutorial-card-close').click();
-    }
-  }
-}
-
-/**
  * Dismisses coaching call if needed.
  */
 export async function dismissCoachingCall() {
@@ -3155,14 +3370,49 @@ export async function renameActiveTable(name: string) {
   await waitForServer();
 }
 
-export async function setWidgetUrl(url: string) {
-  await driver.find('.test-config-widget-url').click();
-  // First clear textbox.
-  await clearInput();
-  if (url) {
-    await sendKeys(url);
+export async function getCustomWidgetName() {
+  await openWidgetPanel();
+  return await driver.find('.test-config-widget-open-custom-widget-gallery').getText();
+}
+
+export async function getCustomWidgetInfo(info: 'description'|'developer'|'last-updated') {
+  await openWidgetPanel();
+  if (await driver.find('.test-config-widget-show-custom-widget-details').isPresent()) {
+    await driver.find('.test-config-widget-show-custom-widget-details').click();
   }
+  if (!await driver.find(`.test-config-widget-custom-widget-${info}`).isPresent()) {
+    return '';
+  }
+
+  return await driver.find(`.test-config-widget-custom-widget-${info}`).getText();
+}
+
+export async function openCustomWidgetGallery() {
+  await openWidgetPanel();
+  await driver.find('.test-config-widget-open-custom-widget-gallery').click();
+  await waitForServer();
+}
+
+interface SetWidgetOptions {
+  /** Defaults to `true`. */
+  openGallery?: boolean;
+}
+
+export async function setCustomWidgetUrl(url: string, options: SetWidgetOptions = {}) {
+  const {openGallery = true} = options;
+  if (openGallery) { await openCustomWidgetGallery(); }
+  await driver.find('.test-custom-widget-gallery-custom-url').click();
+  await clearInput();
+  if (url) { await sendKeys(url); }
   await sendKeys(Key.ENTER);
+  await waitForServer();
+}
+
+export async function setCustomWidget(content: string|RegExp, options: SetWidgetOptions = {}) {
+  const {openGallery = true} = options;
+  if (openGallery) { await openCustomWidgetGallery(); }
+  await driver.findContent('.test-custom-widget-gallery-widget', content).click();
+  await driver.find('.test-custom-widget-gallery-save').click();
   await waitForServer();
 }
 
@@ -3280,11 +3530,14 @@ export async function setRangeFilterBound(minMax: 'min'|'max', value: string|{re
   }
 }
 
-export async function skipWelcomeQuestions() {
-  if (await driver.find('.test-welcome-questions').isPresent()) {
-    await driver.sendKeys(Key.ESCAPE);
-    assert.equal(await driver.find('.test-welcome-questions').isPresent(), false);
-  }
+/**
+ * Skips the onboarding page that's shown to users on their first visit to the
+ * doc menu.
+ */
+export async function skipOnboarding() {
+  await driver.findWait('.test-onboarding-page', 2000);
+  await waitForServer();
+  await driver.navigate().refresh();
 }
 
 /**
@@ -3440,6 +3693,52 @@ export async function switchToWindow(target: string) {
       await driver.sleep(250);
     }
   }
+}
+
+/**
+ * Creates a temporary textarea to the document for pasting the contents of
+ * the clipboard.
+ */
+export async function createClipboardTextArea() {
+  function createTextArea() {
+    const textArea = window.document.createElement('textarea');
+    textArea.style.position = 'absolute';
+    textArea.style.top = '0';
+    textArea.style.height = '2rem';
+    textArea.style.width = '16rem';
+    textArea.id = 'clipboardText';
+    window.document.body.appendChild(textArea);
+  }
+
+  await driver.executeScript(createTextArea);
+}
+
+/**
+ * Removes the temporary textarea added by `createClipboardTextArea`.
+ */
+export async function removeClipboardTextArea() {
+  function removeTextArea() {
+    const textArea = window.document.getElementById('clipboardText');
+    if (textArea) {
+      window.document.body.removeChild(textArea);
+    }
+  }
+
+  await driver.executeScript(removeTextArea);
+}
+
+/**
+ * Sets up a temporary textarea for pasting the contents of the clipboard,
+ * removing it after all tests have run.
+ */
+export function withClipboardTextArea() {
+  before(async function() {
+    await createClipboardTextArea();
+  });
+
+  after(async function() {
+    await removeClipboardTextArea();
+  });
 }
 
 /*
@@ -3636,6 +3935,41 @@ export function findValue(selector: string, value: string|RegExp) {
     throw new Error(`No element found matching ${selector}, tested ${tested.join(', ')}`);
   };
   return new WebElementPromise(driver, inner());
+}
+
+export async function switchUser(email: string) {
+  await driver.findWait('.test-user-icon', 1000).click();
+  await driver.findContentWait('.test-usermenu-other-email', exactMatch(email), 1000).click();
+  await waitForServer();
+}
+
+/**
+ * Waits for the toast message with the given text to appear.
+ */
+export async function waitForAccessDenied() {
+  await waitToPass(async () => {
+    assert.equal(
+      await driver.findWait('.test-notifier-toast-message', 1000).getText(),
+      'access denied');
+  });
+}
+
+/**
+ * Deletes a widget by title. Optionally confirms deletion only for the widget without the data.
+ */
+export async function deleteWidget(title: string) {
+  const menu = await openSectionMenu('viewLayout', title);
+  await menu.findContent('.test-cmd-name', 'Delete widget').click();
+  await waitForServer();
+}
+
+export async function deleteWidgetWithData(title?: string) {
+  title ??= await getActiveSectionTitle();
+  const menu = await openSectionMenu('viewLayout', title);
+  await menu.findContent('.test-cmd-name', 'Delete widget').click();
+  await driver.findWait('.test-option-deleteOnlyWidget', 100).click();
+  await driver.find('.test-modal-confirm').click();
+  await waitForServer();
 }
 
 } // end of namespace gristUtils

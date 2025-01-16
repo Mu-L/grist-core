@@ -25,7 +25,6 @@ export type CommandName =
   | 'expandSection'
   | 'leftPanelOpen'
   | 'rightPanelOpen'
-  | 'videoTourToolsOpen'
   | 'cursorDown'
   | 'cursorUp'
   | 'cursorRight'
@@ -64,6 +63,7 @@ export type CommandName =
   | 'cut'
   | 'paste'
   | 'contextMenuCopy'
+  | 'contextMenuCopyWithHeaders'
   | 'contextMenuCut'
   | 'contextMenuPaste'
   | 'fillSelectionDown'
@@ -84,6 +84,7 @@ export type CommandName =
   | 'deleteRecords'
   | 'insertFieldBefore'
   | 'insertFieldAfter'
+  | 'makeHeadersFromRow'
   | 'renameField'
   | 'hideFields'
   | 'hideCardFields'
@@ -267,11 +268,6 @@ export const groups: CommendGroupDef[] = [{
       name: 'rightPanelOpen',
       keys: [],
       desc: 'Shortcut to open the right panel',
-    },
-    {
-      name: 'videoTourToolsOpen',
-      keys: [],
-      desc: 'Shortcut to open video tour from home left panel',
     },
     {
       name: 'activateAssistant',
@@ -476,6 +472,10 @@ export const groups: CommendGroupDef[] = [{
       desc: 'Copy current selection to clipboard',
       bindKeys: false,
     }, {
+      name: 'contextMenuCopyWithHeaders',
+      keys: [],
+      desc: 'Copy current selection to clipboard including headers',
+    }, {
       name: 'contextMenuCut',
       keys: ['Mod+X'],
       desc: 'Cut current selection to clipboard',
@@ -563,6 +563,10 @@ export const groups: CommendGroupDef[] = [{
       keys: ['Alt+='],
       desc: 'Insert a new column, after the currently selected one'
     }, {
+      name: 'makeHeadersFromRow',
+      keys: ['Mod+Shift+H'],
+      desc: 'Use currently selected line as table headers'
+    }, {
       name: 'renameField',
       keys: ['Ctrl+m'],
       desc: 'Rename the currently selected column'
@@ -586,10 +590,6 @@ export const groups: CommendGroupDef[] = [{
       name: 'clearColumns',
       keys: [],
       desc: 'Clear the selected columns'
-    }, {
-      name: 'clearCardFields',
-      keys: [],
-      desc: 'Clear the selected fields'
     }, {
       name: 'convertFormulasToData',
       keys: [],

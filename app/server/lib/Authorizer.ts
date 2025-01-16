@@ -7,7 +7,7 @@ import {canEdit, canView, getWeakestRole, Role} from 'app/common/roles';
 import {UserOptions} from 'app/common/UserAPI';
 import {Document} from 'app/gen-server/entity/Document';
 import {User} from 'app/gen-server/entity/User';
-import {DocAuthKey, DocAuthResult, HomeDBManager} from 'app/gen-server/lib/HomeDBManager';
+import {DocAuthKey, DocAuthResult, HomeDBManager} from 'app/gen-server/lib/homedb/HomeDBManager';
 import {forceSessionChange, getSessionProfiles, getSessionUser, getSignInStatus, linkOrgWithEmail, SessionObj,
         SessionUserObj, SignInStatus} from 'app/server/lib/BrowserSession';
 import {RequestWithOrg} from 'app/server/lib/extractOrg';
@@ -18,7 +18,7 @@ import {makeId} from 'app/server/lib/idUtils';
 import log from 'app/server/lib/log';
 import {IPermitStore, Permit} from 'app/server/lib/Permit';
 import {AccessTokenInfo} from 'app/server/lib/AccessTokens';
-import {allowHost, getOriginUrl, optStringParam} from 'app/server/lib/requestUtils';
+import {allowHost, buildXForwardedForHeader, getOriginUrl, optStringParam} from 'app/server/lib/requestUtils';
 import * as cookie from 'cookie';
 import {NextFunction, Request, RequestHandler, Response} from 'express';
 import {IncomingMessage} from 'http';
@@ -191,6 +191,24 @@ export async function addRequestUser(
       mreq.userIsAuthorized = true;
       hasApiKey = true;
     }
+  }
+
+  // Check if we have a boot key. This is a fallback mechanism for an
+  // administrator to authenticate themselves by demonstrating access
+  // to the environment.
+  if (!authDone && mreq.headers && mreq.headers['x-boot-key']) {
+    const reqBootKey = String(mreq.headers['x-boot-key']);
+    const bootKey = options.gristServer.getBootKey();
+    if (!bootKey || bootKey !== reqBootKey) {
+      return res.status(401).send('Bad request: invalid Boot key');
+    }
+    const userId = dbManager.getSupportUserId();
+    const user = await dbManager.getUser(userId);
+    mreq.user = user;
+    mreq.userId = userId;
+    mreq.users = [dbManager.makeFullUser(user!)];
+    mreq.userIsAuthorized = true;
+    authDone = true;
   }
 
   // Special permission header for internal housekeeping tasks
@@ -677,21 +695,28 @@ export function assertAccess(
  * Pull out headers to pass along to a proxied service.  Focused primarily on
  * authentication.
  */
-export function getTransitiveHeaders(req: Request): {[key: string]: string} {
+export function getTransitiveHeaders(
+  req: Request,
+  { includeOrigin }: { includeOrigin: boolean }
+): {[key: string]: string} {
   const Authorization = req.get('Authorization');
   const Cookie = req.get('Cookie');
   const PermitHeader = req.get('Permit');
   const Organization = (req as RequestWithOrg).org;
   const XRequestedWith = req.get('X-Requested-With');
+  const UserAgent = req.get('User-Agent');
   const Origin = req.get('Origin');  // Pass along the original Origin since it may
                                      // play a role in granular access control.
+
   const result: Record<string, string> = {
     ...(Authorization ? { Authorization } : undefined),
     ...(Cookie ? { Cookie } : undefined),
     ...(Organization ? { Organization } : undefined),
     ...(PermitHeader ? { Permit: PermitHeader } : undefined),
     ...(XRequestedWith ? { 'X-Requested-With': XRequestedWith } : undefined),
-    ...(Origin ? { Origin } : undefined),
+    ...(UserAgent ? { 'User-Agent': UserAgent } : undefined),
+    ...buildXForwardedForHeader(req),
+    ...((includeOrigin && Origin) ? { Origin } : undefined),
   };
   const extraHeader = process.env.GRIST_FORWARD_AUTH_HEADER;
   const extraHeaderValue = extraHeader && req.get(extraHeader);

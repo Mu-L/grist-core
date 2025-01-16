@@ -11,10 +11,10 @@ import {User} from 'app/gen-server/entity/User';
 import {Workspace} from 'app/gen-server/entity/Workspace';
 import {SessionUserObj} from 'app/server/lib/BrowserSession';
 import {getDocWorkerMap} from 'app/gen-server/lib/DocWorkerMap';
-import {HomeDBManager} from 'app/gen-server/lib/HomeDBManager';
+import {HomeDBManager} from 'app/gen-server/lib/homedb/HomeDBManager';
 import * as docUtils from 'app/server/lib/docUtils';
 import {FlexServer, FlexServerOptions} from 'app/server/lib/FlexServer';
-import {main as mergedServerMain, ServerType} from 'app/server/mergedServerMain';
+import {MergedServer, ServerType} from 'app/server/MergedServer';
 import axios from 'axios';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
@@ -37,9 +37,10 @@ export class TestServer {
   public async start(servers: ServerType[] = ["home"],
                      options: FlexServerOptions = {}): Promise<string> {
     await createInitialDb();
-    this.server = await mergedServerMain(0, servers, {logToConsole: isAffirmative(process.env.DEBUG),
-                                                      externalStorage: false,
-                                                      ...options});
+    const mergedServer = await MergedServer.create(0, servers, {logToConsole: isAffirmative(process.env.DEBUG),
+                                                      externalStorage: false, ...options});
+    await mergedServer.run();
+    this.server = mergedServer.flexServer;
     this.serverUrl = this.server.getOwnUrl();
     this.dbManager = this.server.getHomeDBManager();
     this.defaultSession = new TestSession(this.server);
@@ -254,7 +255,7 @@ export class TestSession {
   ) {
     const resp = await axios.get(`${this.home.getOwnUrl()}/test/session`,
                                  {validateStatus: (s => s < 400), headers: this.headers});
-    const cookie = this.headers.Cookie || resp.headers['set-cookie'][0];
+    const cookie = this.headers.Cookie || resp.headers['set-cookie']![0];
     const cid = decodeURIComponent(cookie.split('=')[1].split(';')[0]);
     const sessionId = this.home.getSessions().getSessionIdFromCookie(cid);
     const scopedSession = this.home.getSessions().getOrCreateSession(sessionId as string, org, '');
@@ -263,7 +264,7 @@ export class TestSession {
     if (clearCache) { this.home.getSessions().clearCacheIfNeeded(); }
     this.headers.Cookie = cookie;
     return {
-      validateStatus: (status: number) => true,
+      validateStatus: (_status: number) => true,
       headers: {
         'Cookie': cookie,
         'X-Requested-With': 'XMLHttpRequest',

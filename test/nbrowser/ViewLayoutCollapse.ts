@@ -15,25 +15,102 @@ describe("ViewLayoutCollapse", function() {
   let session: gu.Session;
 
   before(async () => {
-    session = await gu.session().login();
-    await session.tempDoc(cleanup, 'Investment Research.grist');
-    await gu.openPage("Overview");
+    session = await gu.session().teamSite.login();
+    await session.tempNewDoc(cleanup);
+  });
+
+  it('fix:copies collapsed sections properly', async function() {
+    // When one of 2 widget was collapsed, the resulting widget can become a root section. Then,
+    // when a page was duplicated, the layout was duplicated incorrectly (with wrong collapsed
+    // section). This resulted in a bug, when the root section was deleted, as it was the last
+    // section in the saved layout, but not the last section on the visible layout.
+
+    // Add new page with new table.
+    await gu.addNewPage('Table', 'New Table', {
+      tableName: 'Broken'
+    });
+
+    await gu.renameActiveSection('Collapsed');
+
+    // Add section here (with the same table).
+    await gu.addNewSection('Table', 'Broken');
+
+    // Rename it so that it is easier to find.
+    await gu.renameActiveSection('NotCollapsed');
+
+    // Now store the layout, by amending it (so move the collapsed widget below).
+    const {height} = await gu.getSection('NotCollapsed').getRect();
+    await dragMain('Collapsed');
+    await move(gu.getSection('NotCollapsed'), { x: 50, y: height / 2 });
+    await driver.sleep(300);
+    await move(gu.getSection('NotCollapsed'), { x: 100, y: height / 2 });
+    await driver.sleep(300);
+    await driver.withActions(actions => actions.release());
+    // Wait for the debounced save.
+    await driver.sleep(1500);
+    await gu.waitForServer();
+
+    // Now collapse it.
+    await collapseByMenu('Collapsed');
+
+    // Now duplicate the page.
+    await gu.duplicatePage('Broken', 'Broken2');
+
+    // Now on this page we saw two uncollapsed sections (make sure this is not the case).
+    assert.deepEqual(await gu.getSectionTitles(), ['NotCollapsed']);
+    // And one collapsed.
+    assert.deepEqual(await collapsedSectionTitles(), ['Collapsed']);
+  });
+
+  it('fix:can delete root section', async function() {
+    // But even if the layout spec was corrupted, we still should be able to delete the root section
+    // when replacing it with new one.
+
+    // Break the spec.
+    const specJson: string = await driver.executeScript(
+      'return gristDocPageModel.gristDoc.get().docModel.views.rowModels[3].layoutSpec()'
+    );
+
+    // To break the spec, we will replace id of the collapsed section, then viewLayout will try to fix it,
+    // by rendering the missing section without patching the layout spec (which is good, because this could
+    // happen on readonly doc or a snapshot).
+    const spec = JSON.parse(specJson);
+    spec.collapsed[0].leaf = -10;
+
+    await driver.executeScript(
+      `gristDocPageModel.gristDoc.get().docModel.views.rowModels[3].layoutSpec.setAndSave('${JSON.stringify(spec)}')`
+    );
+
+    await gu.waitForServer();
+
+    // We now should see two sections.
+    assert.deepEqual(await gu.getSectionTitles(), ['NotCollapsed', 'Collapsed']);
+
+    // And we should be able to delete the top one (NotCollapsed).
+    await gu.openSectionMenu('viewLayout', 'NotCollapsed');
+    await driver.findContent('.test-cmd-name', 'Delete widget').click();
+    await gu.waitForServer();
+
+    await gu.checkForErrors();
   });
 
   it('fix: custom widget should restart when added back after collapsing', async function() {
+    await session.tempDoc(cleanup, 'Investment Research (smaller).grist');
+    await gu.openPage("Overview");
+
     const revert = await gu.begin();
 
     // Add custom section.
     await gu.addNewPage('Table', 'Companies');
-    await gu.addNewSection('Custom', 'Companies', { selectBy: 'COMPANIES'});
+    await gu.addNewSection('Custom', 'Companies', {selectBy: 'COMPANIES'});
 
     // Serve custom widget.
     const widgetServer = await serveSomething(app => {
       addStatic(app);
     });
     cleanup.addAfterAll(widgetServer.shutdown);
+    await gu.setCustomWidgetUrl(widgetServer.url + '/probe/index.html', {openGallery: false});
     await gu.openWidgetPanel();
-    await gu.setWidgetUrl(widgetServer.url + '/probe/index.html');
     await gu.widgetAccess(AccessLevel.full);
 
     // Collapse it.
@@ -64,15 +141,15 @@ describe("ViewLayoutCollapse", function() {
 
     // Add custom section.
     await gu.addNewPage('Table', 'Companies');
-    await gu.addNewSection('Custom', 'Companies', { selectBy: 'COMPANIES'});
+    await gu.addNewSection('Custom', 'Companies', {selectBy: 'COMPANIES'});
 
     // Serve custom widget.
     const widgetServer = await serveSomething(app => {
       addStatic(app);
     });
     cleanup.addAfterAll(widgetServer.shutdown);
+    await gu.setCustomWidgetUrl(widgetServer.url + '/probe/index.html', {openGallery: false});
     await gu.openWidgetPanel();
-    await gu.setWidgetUrl(widgetServer.url + '/probe/index.html');
     await gu.widgetAccess(AccessLevel.full);
 
     // Collapse it.
@@ -175,8 +252,7 @@ describe("ViewLayoutCollapse", function() {
     await gu.checkForErrors();
 
     assert.equal(await gu.getActiveSectionTitle(), INVESTMENTS);
-    // Make sure we are in 1column 9th row.
-    assert.deepEqual(await gu.getCursorPosition(), {rowNum: 9, col: 0});
+    assert.deepEqual(await gu.getCursorPosition(), {rowNum: 8, col: 0});
 
     // Hide companies chart, and search for mobile (should show no results).
     await collapseByMenu(COMPANIES_CHART);
@@ -192,10 +268,10 @@ describe("ViewLayoutCollapse", function() {
     // Now search for web.
     await gu.closeSearch();
     await gu.search('web');
-    assert.deepEqual(await gu.getCursorPosition(), {rowNum: 5, col: 0});
+    assert.deepEqual(await gu.getCursorPosition(), {rowNum: 2, col: 0});
 
     // Recreate document (can't undo).
-    await session.tempDoc(cleanup, 'Investment Research.grist');
+    await session.tempDoc(cleanup, 'Investment Research (smaller).grist');
   });
 
 
@@ -236,11 +312,14 @@ describe("ViewLayoutCollapse", function() {
 
     // Move back and drop.
     await gu.getSection(COMPANIES_CHART).getRect();
-    await move(getDragElement(COMPANIES_CHART));
+    await move(getDragElement(COMPANIES_CHART), {x : 50});
+    await driver.sleep(100);
+    await move(getDragElement(COMPANIES_CHART), {x : 100});
     await driver.sleep(100);
     await move(getDragElement(COMPANIES_CHART), {x : 200});
-    await driver.sleep(300);
-    assert.lengthOf(await driver.findAll(".layout_editor_drop_target.layout_hover"), 1);
+    await gu.waitToPass(async () => {
+      assert.lengthOf(await driver.findAll(".layout_editor_drop_target.layout_hover"), 1);
+    }, 1000);
 
     await driver.withActions(actions => actions.release());
     await driver.sleep(600);
@@ -317,7 +396,7 @@ describe("ViewLayoutCollapse", function() {
     assert.equal(cursor.col, 1);
     assert.equal(await gu.getActiveCell().getText(), 'angel');
     assert.equal(await gu.getActiveSectionTitle(), 'INVESTMENTS');
-    assert.match(await driver.getCurrentUrl(), /\/o\/docs\/[^/]+\/Investment-Research\/p\/1$/);
+    assert.match(await driver.getCurrentUrl(), /Investment-Research-smaller\/p\/1$/);
     await revert();
   });
 
@@ -683,6 +762,96 @@ describe("ViewLayoutCollapse", function() {
     await gu.checkForErrors();
   });
 
+  it('should prompt when last section is removed from tray', async () => {
+    const revert = await gu.begin();
+
+    // Add brand new table and collapse it.
+    await gu.addNewSection('Table', 'New Table', {tableName: 'ToCollapse'});
+    await collapseByMenu('ToCollapse');
+
+    // Now try to remove it, we should see prompt.
+    await openCollapsedSectionMenu('ToCollapse');
+    await driver.find('.test-section-delete').click();
+    assert.match(
+      await driver.find('.test-modal-title').getText(),
+      /Table ToCollapse will no longer be visible/
+    );
+
+    // Select first option, to delete both table and widget.
+    await driver.find('.test-option-deleteDataAndWidget').click();
+    await driver.find('.test-modal-confirm').click();
+    await gu.waitForServer();
+
+    // Make sure it is removed.
+    assert.deepEqual(await collapsedSectionTitles(), []);
+    assert.deepEqual(await visibleTables(), ['Companies', 'Investments']);
+    await gu.sendKeys(Key.ESCAPE);
+
+    // Single undo should add it back.
+    await gu.undo();
+    assert.deepEqual(await collapsedSectionTitles(), ['TOCOLLAPSE']);
+    assert.deepEqual(await visibleTables(), ['Companies', 'Investments', 'ToCollapse']);
+
+    // Now do the same but, keep data.
+    await openCollapsedSectionMenu('ToCollapse');
+    await driver.find('.test-section-delete').click();
+    await driver.findWait('.test-modal-dialog', 100);
+    await driver.find('.test-option-deleteOnlyWidget').click();
+    await driver.find('.test-modal-confirm').click();
+    await gu.waitForServer();
+
+    // Make sure it is removed.
+    assert.deepEqual(await collapsedSectionTitles(), []);
+    assert.deepEqual(await visibleTables(), ['Companies', 'Investments', 'ToCollapse']);
+
+    // Test single undo.
+    await gu.undo();
+    assert.deepEqual(await collapsedSectionTitles(), ['TOCOLLAPSE']);
+    assert.deepEqual(await visibleTables(), ['Companies', 'Investments', 'ToCollapse']);
+
+    // Uncollapse it, and do the same with normal section.
+    await addToMainByMenu('ToCollapse');
+
+    // Now try to remove it, we should see prompt.
+    assert.include(
+      await driver.findAll('.test-viewsection-title', e => e.getText()), 'TOCOLLAPSE');
+
+    await gu.openSectionMenu('viewLayout', 'ToCollapse');
+    await driver.find('.test-section-delete').click();
+    await driver.findWait('.test-modal-dialog', 100);
+    await driver.find('.test-option-deleteOnlyWidget').click();
+    await driver.find('.test-modal-confirm').click();
+    await gu.waitForServer();
+    assert.notInclude(
+      await driver.findAll('.test-viewsection-title', e => e.getText()), 'TOCOLLAPSE');
+    assert.deepEqual(await visibleTables(), ['Companies', 'Investments', 'ToCollapse']);
+    // Test undo.
+    await gu.undo();
+    assert.include(
+      await driver.findAll('.test-viewsection-title', e => e.getText()), 'TOCOLLAPSE');
+
+    // Do the same but delete data and widget.
+    await gu.openSectionMenu('viewLayout', 'ToCollapse');
+    await driver.find('.test-section-delete').click();
+    await driver.findWait('.test-modal-dialog', 100);
+    await driver.find('.test-option-deleteDataAndWidget').click();
+    await driver.find('.test-modal-confirm').click();
+    await gu.waitForServer();
+
+    // Make sure it is removed.
+    assert.notInclude(
+      await driver.findAll('.test-viewsection-title', e => e.getText()), 'TOCOLLAPSE');
+    assert.deepEqual(await visibleTables(), ['Companies', 'Investments']);
+
+    // Test undo.
+    await gu.undo();
+    assert.include(
+      await driver.findAll('.test-viewsection-title', e => e.getText()), 'TOCOLLAPSE');
+    assert.deepEqual(await visibleTables(), ['Companies', 'Investments', 'ToCollapse']);
+
+    await revert();
+  });
+
   it("should switch active section when collapsed", async () => {
     const revert = await gu.begin();
     await gu.selectSectionByTitle(gu.exactMatch(COMPANIES));
@@ -910,4 +1079,12 @@ async function waitForSave() {
     assert.isTrue(pending.length === 0);
     await gu.waitForServer();
   }, 3000);
+}
+
+async function visibleTables() {
+  await driver.findWait('.test-dp-add-new', 2000).doClick();
+  await driver.find('.test-dp-add-new-page').doClick();
+  const titles = await driver.findAll('.test-wselect-table', e => e.getText());
+  await gu.sendKeys(Key.ESCAPE);
+  return titles.map(x => x.trim()).filter(Boolean).filter(x => x !== 'New Table');
 }

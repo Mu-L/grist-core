@@ -106,6 +106,7 @@ export interface ThemeColors {
 
   /* Popups */
   'popup-bg': string;
+  'popup-secondary-bg': string;
   'popup-shadow-inner': string;
   'popup-shadow-outer': string;
   'popup-close-button-fg': string;
@@ -253,9 +254,12 @@ export interface ThemeColors {
   'right-panel-tab-bg': string;
   'right-panel-tab-icon': string;
   'right-panel-tab-icon-hover': string;
+  'right-panel-tab-border': string;
   'right-panel-tab-hover-bg': string;
+  'right-panel-tab-hover-fg': string;
   'right-panel-tab-selected-fg': string;
   'right-panel-tab-selected-bg': string;
+  'right-panel-tab-selected-icon': string;
   'right-panel-tab-button-hover-bg': string;
   'right-panel-subtab-fg': string;
   'right-panel-subtab-selected-fg': string;
@@ -269,6 +273,8 @@ export interface ThemeColors {
   'right-panel-toggle-button-disabled-bg': string;
   'right-panel-field-settings-bg': string;
   'right-panel-field-settings-button-bg': string;
+  'right-panel-custom-widget-button-fg': string;
+  'right-panel-custom-widget-button-bg': string;
 
   /* Document History */
   'document-history-snapshot-fg': string;
@@ -572,6 +578,30 @@ export interface ThemeColors {
 
   /* Numeric Spinners */
   'numeric-spinner-fg': string;
+
+  /* Custom Widget Gallery */
+  'widget-gallery-border': string;
+  'widget-gallery-border-selected': string;
+  'widget-gallery-shadow': string;
+  'widget-gallery-bg-hover': string;
+  'widget-gallery-secondary-header-fg': string;
+  'widget-gallery-secondary-header-bg': string;
+  'widget-gallery-secondary-header-bg-hover': string;
+
+  /* Markdown Cell */
+  'markdown-cell-light-bg': string;
+  'markdown-cell-light-border': string;
+  'markdown-cell-medium-border': string;
+
+  /* App Header */
+  'app-header-bg': string;
+  'app-header-border': string;
+  'app-header-border-hover': string;
+
+  /* Card Button */
+  'card-button-border': string;
+  'card-button-border-selected': string;
+  'card-button-shadow': string;
 }
 
 export const ThemePrefsChecker = createCheckers(ThemePrefsTI).ThemePrefs as CheckerT<ThemePrefs>;

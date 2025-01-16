@@ -1,7 +1,7 @@
 import * as commands from 'app/client/components/commands';
 import {makeT} from 'app/client/lib/localization';
+import {buildHighlightedCode} from 'app/client/ui/CodeHighlight';
 import {ShortcutKey, ShortcutKeyContent} from 'app/client/ui/ShortcutKey';
-import {basicButtonLink} from 'app/client/ui2018/buttons';
 import {icon} from 'app/client/ui2018/icons';
 import {cssLink} from 'app/client/ui2018/links';
 import {commonUrls, GristDeploymentType} from 'app/common/gristUrls';
@@ -29,17 +29,6 @@ const cssIcon = styled(icon, `
   width: 18px;
 `);
 
-const cssNewsPopupLearnMoreButton = styled(basicButtonLink, `
-  color: white;
-  border: 1px solid white;
-  padding: 3px;
-
-  &:hover, &:focus, &:visited {
-    color: white;
-    border-color: white;
-  }
-`);
-
 export type Tooltip =
   | 'dataSize'
   | 'setTriggerFormula'
@@ -51,7 +40,13 @@ export type Tooltip =
   | 'uuid'
   | 'lookups'
   | 'formulaColumn'
-  | 'accessRulesTableWide';
+  | 'accessRulesTableWide'
+  | 'setChoiceDropdownCondition'
+  | 'setRefDropdownCondition'
+  | 'communityWidgets'
+  | 'twoWayReferences'
+  | 'twoWayReferencesDisabled'
+  | 'reasignTwoWayReference';
 
 export type TooltipContentFunc = (...domArgs: DomElementArg[]) => DomContents;
 
@@ -137,7 +132,60 @@ see or edit which parts of your document.')
     ...args,
   ),
   accessRulesTableWide: (...args: DomElementArg[]) => cssTooltipContent(
-    dom('div', t('These rules are applied after all column rules have been processed, if applicable.'))
+    dom('div', t('These rules are applied after all column rules have been processed, if applicable.')),
+    ...args,
+  ),
+  setChoiceDropdownCondition: (...args: DomElementArg[]) => cssTooltipContent(
+    dom('div',
+      t('Filter displayed dropdown values with a condition.')
+    ),
+    dom('div', {style: 'margin-top: 8px;'}, t('Example: {{example}}', {
+      example: dom.create(buildHighlightedCode, 'choice not in $Categories', {}, {style: 'margin-top: 8px;'}),
+    })),
+    ...args,
+  ),
+  setRefDropdownCondition: (...args: DomElementArg[]) => cssTooltipContent(
+    dom('div',
+      t('Filter displayed dropdown values with a condition.')
+    ),
+    dom('div', {style: 'margin-top: 8px;'}, t('Example: {{example}}', {
+      example: dom.create(buildHighlightedCode, 'choice.Role == "Manager"', {}, {style: 'margin-top: 8px;'}),
+    })),
+    dom('div',
+      cssLink({href: commonUrls.helpFilteringReferenceChoices, target: '_blank'}, t('Learn more.')),
+    ),
+    ...args,
+  ),
+  communityWidgets: (...args: DomElementArg[]) => cssTooltipContent(
+    dom('div',
+      t('Community widgets are created and maintained by Grist community members.')
+    ),
+    dom('div',
+      cssLink({href: commonUrls.helpCustomWidgets, target: '_blank'}, t('Learn more.')),
+    ),
+    ...args,
+  ),
+  twoWayReferences: (...args: DomElementArg[]) => cssTooltipContent(
+    dom('div',
+      t('Creates a new Reference List column in the target table, with both this ' +
+        'and the target columns editable and synchronized.')
+    ),
+    ...args,
+  ),
+  twoWayReferencesDisabled: (...args: DomElementArg[]) => cssTooltipContent(
+    dom('div',
+      t('Two-way references are not currently supported for Formula or Trigger Formula columns')
+    ),
+    ...args,
+  ),
+  reasignTwoWayReference: (...args: DomElementArg[]) => cssTooltipContent(
+    dom('div',
+      t('This limitation occurs when one column in a two-way reference has the Reference type.')
+    ),
+    dom('div',
+      t(`To allow multiple assignments, change the referenced column's type to Reference List.`)
+    ),
+    ...args,
   ),
 };
 
@@ -294,20 +342,6 @@ to determine who can see or edit which parts of your document.')),
     forceShow: true,
     markAsSeen: false,
   },
-  customURL: {
-    popupType: 'tip',
-    title: () => t('Custom Widgets'),
-    content: (...args: DomElementArg[]) => cssTooltipContent(
-      dom('div',
-        t(
-          'You can choose from widgets available to you in the dropdown, or embed your own by providing its full URL.'
-        ),
-      ),
-      dom('div', cssLink({href: commonUrls.helpCustomWidgets, target: '_blank'}, t('Learn more.'))),
-      ...args,
-    ),
-    deploymentTypes: ['saas', 'core', 'enterprise', 'electron'],
-  },
   calendarConfig: {
     popupType: 'tip',
     title: () => t('Calendar'),
@@ -320,20 +354,5 @@ data.")),
       ...args,
     ),
     deploymentTypes: ['saas', 'core', 'enterprise', 'electron'],
-  },
-  formsAreHere: {
-    popupType: 'news',
-    audience: 'signed-in-users',
-    title: () => t('Forms are here!'),
-    content: (...args: DomElementArg[]) => cssTooltipContent(
-      dom('div', t('Build simple forms right in Grist and share in a click with our new widget. {{learnMoreButton}}', {
-        learnMoreButton: cssNewsPopupLearnMoreButton(t('Learn more'), {
-          href: commonUrls.forms,
-          target: '_blank',
-        }),
-      })),
-      ...args,
-    ),
-    deploymentTypes: ['saas', 'core', 'enterprise'],
   },
 };

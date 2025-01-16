@@ -5,7 +5,7 @@ import {AbortController} from 'node-abort-controller';
 import { ApiError } from 'app/common/ApiError';
 import { SHARE_KEY_PREFIX } from 'app/common/gristUrls';
 import { removeTrailingSlash } from 'app/common/gutil';
-import { HomeDBManager } from "app/gen-server/lib/HomeDBManager";
+import { HomeDBManager } from "app/gen-server/lib/homedb/HomeDBManager";
 import { assertAccess, getOrSetDocAuth, getTransitiveHeaders, RequestWithLogin } from 'app/server/lib/Authorizer';
 import { IDocWorkerMap } from "app/server/lib/DocWorkerMap";
 import { expressWrap } from "app/server/lib/expressWrap";
@@ -70,6 +70,9 @@ export class DocApiForwarder {
     app.use('/api/docs/:docId/webhooks', withDoc);
     app.use('/api/docs/:docId/assistant', withDoc);
     app.use('/api/docs/:docId/sql', withDoc);
+    app.use('/api/docs/:docId/timing', withDoc);
+    app.use('/api/docs/:docId/timing/start', withDoc);
+    app.use('/api/docs/:docId/timing/stop', withDoc);
     app.use('/api/docs/:docId/forms/:vsId', withDoc);
     app.use('^/api/docs$', withoutDoc);
   }
@@ -101,7 +104,11 @@ export class DocApiForwarder {
     url.pathname = removeTrailingSlash(docWorkerUrl.pathname) + url.pathname;
 
     const headers: {[key: string]: string} = {
-      ...getTransitiveHeaders(req),
+      // At this point, we have already checked and trusted the origin of the request.
+      // See FlexServer#addApiMiddleware(). So don't include the "Origin" header.
+      // Including this header also would break features like form submissions,
+      // as the "Host" header is not retrieved when calling getTransitiveHeaders().
+      ...getTransitiveHeaders(req, { includeOrigin: false }),
       'Content-Type': req.get('Content-Type') || 'application/json',
     };
     for (const key of ['X-Sort', 'X-Limit']) {

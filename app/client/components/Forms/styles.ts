@@ -1,8 +1,11 @@
+import type {App} from 'app/client/ui/App';
 import {textarea} from 'app/client/ui/inputs';
 import {sanitizeHTML} from 'app/client/ui/sanitizeHTML';
-import {basicButton, bigBasicButton, bigBasicButtonLink} from 'app/client/ui2018/buttons';
+import {basicButton, basicButtonLink, primaryButtonLink, textButton} from 'app/client/ui2018/buttons';
+import {cssLabel} from 'app/client/ui2018/checkbox';
 import {colors, theme} from 'app/client/ui2018/cssVars';
 import {icon} from 'app/client/ui2018/icons';
+import {numericSpinner} from 'app/client/widgets/NumericSpinner';
 import {BindableValue, dom, DomElementArg, IDomArgs, Observable, styled, subscribeBindable} from 'grainjs';
 import {marked} from 'marked';
 
@@ -14,7 +17,6 @@ export const cssFormView = styled('div.flexauto.flexvbox', `
   align-items: center;
   justify-content: space-between;
   position: relative;
-  background-color: ${theme.leftPanelBg};
   overflow: auto;
   min-height: 100%;
   width: 100%;
@@ -22,7 +24,6 @@ export const cssFormView = styled('div.flexauto.flexvbox', `
 
 export const cssFormContainer = styled('div', `
   background-color: ${theme.mainPanelBg};
-  border: 1px solid ${theme.modalBorderDark};
   color: ${theme.text};
   width: 600px;
   align-self: center;
@@ -31,10 +32,8 @@ export const cssFormContainer = styled('div', `
   display: flex;
   flex-direction: column;
   max-width: calc(100% - 32px);
-  padding-top: 20px;
-  padding-left: 48px;
-  padding-right: 48px;
   gap: 8px;
+  line-height: 1.42857143;
 `);
 
 export const cssFieldEditor = styled('div.hover_border.field_editor', `
@@ -47,6 +46,11 @@ export const cssFieldEditor = styled('div.hover_border.field_editor', `
   margin-bottom: 4px;
   --hover-visible: hidden;
   transition: transform 0.2s ease-in-out;
+  &-Section {
+    outline: 1px solid ${theme.modalBorderDark};
+    margin-bottom: 24px;
+    padding: 16px;
+  }
   &:hover:not(:has(.hover_border:hover),&-cut) {
     --hover-visible: visible;
     outline: 1px solid ${theme.controlPrimaryBg};
@@ -78,36 +82,39 @@ export const cssFieldEditor = styled('div.hover_border.field_editor', `
   }
 `);
 
-export const cssSectionEditor = styled('div', `
-  border-radius: 3px;
-  padding: 16px;
-  border: 1px solid ${theme.modalBorderDark};
-`);
-
-
 export const cssSection = styled('div', `
   position: relative;
   color: ${theme.text};
   margin: 0px auto;
   min-height: 50px;
-  .${cssFormView.className}-preview & {
-    background: transparent;
-    border-radius: unset;
-    padding: 0px;
-    min-height: auto;
+`);
+
+export const cssCheckboxList = styled('div', `
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  &-horizontal {
+    flex-direction: row;
+    flex-wrap: wrap;
+    column-gap: 16px;
   }
 `);
 
-export const cssCheckboxLabel = styled('label', `
-  font-size: 15px;
+export const cssCheckboxLabel = styled(cssLabel, `
+  font-size: 13px;
+  line-height: 16px;
   font-weight: normal;
   user-select: none;
   display: flex;
-  align-items: center;
   gap: 8px;
   margin: 0px;
-  margin-bottom: 8px;
+  overflow-wrap: anywhere;
 `);
+
+export const cssRadioList = cssCheckboxList;
+
+export const cssRadioLabel = cssCheckboxLabel;
 
 export function textbox(obs: Observable<string|undefined>, ...args: DomElementArg[]): HTMLInputElement {
   return dom('input',
@@ -118,12 +125,17 @@ export function textbox(obs: Observable<string|undefined>, ...args: DomElementAr
 }
 
 export const cssQuestion = styled('div', `
-
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 `);
 
 export const cssRequiredWrapper = styled('div', `
-  margin-bottom: 8px;
+  margin: 8px 0px;
   min-height: 16px;
+  overflow-wrap: break-word;
+
   &-required {
     display: grid;
     grid-template-columns: auto 1fr;
@@ -148,7 +160,7 @@ export const cssRenderedLabel = styled('div', `
   min-height: 16px;
 
   color: ${theme.mediumText};
-  font-size: 11px;
+  font-size: 13px;
   line-height: 16px;
   font-weight: 700;
   white-space: pre-wrap;
@@ -186,17 +198,9 @@ export const cssEditableLabel = styled(textarea, `
 `);
 
 export const cssLabelInline = styled('div', `
-  margin-bottom: 0px;
-  & .${cssRenderedLabel.className} {
-    color: ${theme.mediumText};
-    font-size: 15px;
-    font-weight: normal;
-  }
-  & .${cssEditableLabel.className} {
-    color: ${colors.darkText};
-    font-size: 15px;
-    font-weight: normal;
-  }
+  line-height: 16px;
+  margin: 0px;
+  overflow-wrap: anywhere;
 `);
 
 export const cssDesc = styled('div', `
@@ -211,15 +215,19 @@ export const cssDesc = styled('div', `
 `);
 
 export const cssInput = styled('input', `
-  background-color: ${theme.inputDisabledBg};
+  background-color: ${theme.inputBg};
   font-size: inherit;
-  height: 27px;
+  height: 29px;
   padding: 4px 8px;
   border: 1px solid ${theme.inputBorder};
   border-radius: 3px;
   outline: none;
   pointer-events: none;
 
+  &:disabled {
+    color: ${theme.inputDisabledFg};
+    background-color: ${theme.inputDisabledBg};
+  }
   &-invalid {
     color: ${theme.inputInvalid};
   }
@@ -228,10 +236,37 @@ export const cssInput = styled('input', `
   }
 `);
 
+export const cssTextArea = styled('textarea', `
+  background-color: ${theme.inputBg};
+  font-size: inherit;
+  min-height: 29px;
+  padding: 4px 8px;
+  border: 1px solid ${theme.inputBorder};
+  border-radius: 3px;
+  outline: none;
+  pointer-events: none;
+  resize: none;
+  width: 100%;
+
+  &:disabled {
+    color: ${theme.inputDisabledFg};
+    background-color: ${theme.inputDisabledBg};
+  }
+`);
+
+export const cssSpinner = styled(numericSpinner, `
+  height: 29px;
+
+  &-hidden {
+    color: ${theme.inputDisabledFg};
+    background-color: ${theme.inputDisabledBg};
+  }
+`);
+
 export const cssSelect = styled('select', `
   flex: auto;
   width: 100%;
-  background-color: ${theme.inputDisabledBg};
+  background-color: ${theme.inputBg};
   font-size: inherit;
   height: 27px;
   padding: 4px 8px;
@@ -239,18 +274,36 @@ export const cssSelect = styled('select', `
   border-radius: 3px;
   outline: none;
   pointer-events: none;
+`);
 
-  &-invalid {
-    color: ${theme.inputInvalid};
-  }
-  &:has(option[value='']:checked) {
-    font-style: italic;
-    color: ${colors.slate};
+export const cssToggle = styled('div', `
+  display: grid;
+  grid-template-columns: auto 1fr;
+  margin-top: 12px;
+  gap: 8px;
+  --grist-actual-cell-color: ${colors.lightGreen};
+`);
+
+export const cssWidgetSwitch = styled('div.widget_switch', `
+  &-hidden {
+    opacity: 0.6;
   }
 `);
 
-export const cssFieldEditorContent = styled('div', `
+export const cssWarningMessage = styled('div', `
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  column-gap: 8px;
+`);
 
+export const cssWarningIcon = styled(icon, `
+  --icon-color: ${colors.warning};
+  flex-shrink: 0;
+`);
+
+export const cssFieldEditorContent = styled('div', `
+  height: 100%;
 `);
 
 export const cssSelectedOverlay = styled('div._cssSelectedOverlay', `
@@ -260,10 +313,6 @@ export const cssSelectedOverlay = styled('div._cssSelectedOverlay', `
   outline: none;
   .${cssFieldEditor.className}-selected > & {
     opacity: 1;
-  }
-
-  .${cssFormView.className}-preview & {
-    display: none;
   }
 `);
 
@@ -296,21 +345,11 @@ export const cssPlusIcon = styled(icon, `
 
 
 export const cssColumns = styled('div', `
-  --css-columns-count: 2;
   display: grid;
   grid-template-columns: repeat(var(--css-columns-count), 1fr) 32px;
   gap: 8px;
   padding: 8px 4px;
-
-  .${cssFormView.className}-preview & {
-    background: transparent;
-    border-radius: unset;
-    padding: 0px;
-    grid-template-columns: repeat(var(--css-columns-count), 1fr);
-    min-height: auto;
-  }
 `);
-
 
 export const cssColumn = styled('div', `
   position: relative;
@@ -344,21 +383,6 @@ export const cssColumn = styled('div', `
   &-drag-over {
     outline: 2px dashed ${theme.controlPrimaryBg};
   }
-
-  &-add-button {
-  }
-
-  .${cssFormView.className}-preview &-add-button {
-    display: none;
-  }
-
-  .${cssFormView.className}-preview &-empty {
-    background: transparent;
-    border-radius: unset;
-    padding: 0px;
-    min-height: auto;
-    border: 0px;
-  }
 `);
 
 export const cssButtonGroup = styled('div', `
@@ -373,13 +397,22 @@ export const cssButtonGroup = styled('div', `
 `);
 
 
-export const cssIconLink = styled(bigBasicButtonLink, `
+export const cssSmallLinkButton = styled(basicButtonLink, `
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+`);
+
+const textSmallButton = `
   display: flex;
   align-items: center;
   gap: 4px;
+  min-height: 26px;
 
-  &-standard {
-    background-color: ${theme.leftPanelBg};
+  &-frameless {
+    background-color: transparent;
+    border: none;
   }
   &-warning {
     color: ${theme.controlPrimaryFg};
@@ -391,50 +424,16 @@ export const cssIconLink = styled(bigBasicButtonLink, `
     background-color: #B8791B;
     border: none;
   }
-  &-frameless {
-    background-color: transparent;
-    border: none;
-  }
-`);
+`;
 
-export const cssSmallIconButton = styled(basicButton, `
-  display: flex;
-  align-items: center;
-  gap: 4px;
-
-  &-frameless {
-    background-color: transparent;
-    border: none;
-  }
-`);
-
-export const cssIconButton = styled(bigBasicButton, `
-  display: flex;
-  align-items: center;
-  gap: 4px;
-
-  &-standard {
-    background-color: ${theme.leftPanelBg};
-  }
-  &-warning {
-    color: ${theme.controlPrimaryFg};
-    background-color: ${theme.toastWarningBg};
-    border: none;
-  }
-  &-warning:hover {
-    color: ${theme.controlPrimaryFg};
-    background-color: #B8791B;
-    border: none;
-  }
-  &-frameless {
-    background-color: transparent;
-    border: none;
-  }
-`);
+export const cssSmallButton = styled(basicButton, textSmallButton);
+export const cssPrimarySmallLink = styled(primaryButtonLink, textSmallButton);
 
 export const cssMarkdownRendered = styled('div', `
   min-height: 1.5rem;
   font-size: 15px;
+  overflow-wrap: break-word;
+
   & textarea {
     font-size: 15px;
   }
@@ -506,7 +505,7 @@ export const cssMarkdownRender = styled('div', `
 export function markdown(obs: BindableValue<string>, ...args: IDomArgs<HTMLDivElement>) {
   return cssMarkdownRender(el => {
     dom.autoDisposeElem(el, subscribeBindable(obs, val => {
-      el.innerHTML = sanitizeHTML(marked(val));
+      el.innerHTML = sanitizeHTML(marked(val, {async: false}));
     }));
   }, ...args);
 }
@@ -549,16 +548,13 @@ export const cssPreview = styled('iframe', `
 `);
 
 export const cssSwitcher = styled('div', `
-  flex-shrink: 0;
-  margin-top: 24px;
-  border-top: 1px solid ${theme.modalBorder};
-  margin-left: -48px;
-  margin-right: -48px;
+  border-top: 1px solid ${theme.menuBorder};
+  width: 100%;
 `);
 
 export const cssSwitcherMessage = styled('div', `
   display: flex;
-  padding: 0px 16px 0px 16px;
+  padding: 8px 16px;
 `);
 
 export const cssSwitcherMessageBody = styled('div', `
@@ -566,7 +562,7 @@ export const cssSwitcherMessageBody = styled('div', `
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 10px 32px;
+  padding: 8px 16px;
 `);
 
 export const cssSwitcherMessageDismissButton = styled('div', `
@@ -589,8 +585,7 @@ export const cssParagraph = styled('div', `
 export const cssFormEditBody = styled('div', `
   width: 100%;
   overflow: auto;
-  padding-top: 52px;
-  padding-bottom: 24px;
+  padding: 20px;
 `);
 
 export const cssRemoveButton = styled('div', `
@@ -615,12 +610,130 @@ export const cssRemoveButton = styled('div', `
     cursor: pointer;
   }
   .${cssFieldEditor.className}-selected > &,
-  .${cssFieldEditor.className}:hover > & {
+  .${cssFieldEditor.className}:hover:not(:has(.hover_border:hover)) > & {
     display: flex;
   }
   &-right {
     right: -20px;
   }
+`);
+
+export const cssShareMenu = styled('div', `
+  color: ${theme.text};
+  background-color: ${theme.popupBg};
+  width: min(calc(100% - 16px), 400px);
+  border-radius: 3px;
+  padding: 8px;
+`);
+
+export const cssShareMenuHeader = styled('div', `
+  display: flex;
+  justify-content: flex-end;
+`);
+
+export const cssShareMenuBody = styled('div', `
+  box-sizing: content-box;
+  display: flex;
+  flex-direction: column;
+  row-gap: 32px;
+  padding: 0px 16px 24px 16px;
+  min-height: 160px;
+`);
+
+export const cssShareMenuCloseButton = styled('div', `
+  flex-shrink: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 4px;
+  --icon-color: ${theme.popupCloseButtonFg};
+
+  &:hover {
+    background-color: ${theme.hover};
+  }
+`);
+
+export const cssShareMenuSectionHeading = styled('div', `
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  margin-bottom: 16px;
+`);
+
+export const cssShareMenuHintText = styled('div', `
+  color: ${theme.lightText};
+`);
+
+export const cssShareMenuSpinner = styled('div', `
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: inherit;
+`);
+
+export const cssShareMenuSectionButtons = styled('div', `
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+`);
+
+export const cssShareMenuUrlBlock = styled('div', `
+  display: flex;
+  background-color: ${theme.inputReadonlyBg};
+  padding: 8px;
+  border-radius: 3px;
+  width: 100%;
+  margin-top: 16px;
+`);
+
+export const cssShareMenuUrl = styled('input', `
+  background: transparent;
+  flex-grow: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: none;
+  outline: none;
+`);
+
+export const cssShareMenuCopyButton = styled(textButton, `
+  margin-left: 4px;
+  font-weight: 500;
+`);
+
+export const cssShareMenuEmbedFormButton = styled(textButton, `
+  font-weight: 500;
+`);
+
+export const cssShareMenuCodeBlock = styled('div', `
+  border-radius: 3px;
+  background-color: ${theme.inputReadonlyBg};
+  padding: 8px;
+`);
+
+export const cssShareMenuCodeBlockButtons = styled('div', `
+  display: flex;
+  justify-content: flex-end;
+`);
+
+export const cssShareMenuCode = styled('textarea', `
+  background-color: transparent;
+  border: none;
+  border-radius: 3px;
+  word-break: break-all;
+  width: 100%;
+  outline: none;
+  resize: none;
+`);
+
+export const cssFormDisabledOverlay = styled('div', `
+  background-color: ${theme.widgetBg};
+  opacity: 0.8;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 100;
 `);
 
 export function saveControls(editMode: Observable<boolean>, save: (ok: boolean) => void) {
@@ -647,11 +760,17 @@ export function saveControls(editMode: Observable<boolean>, save: (ok: boolean) 
         }
       }
     }),
-    dom.on('blur', (ev) => {
-      if (!editMode.isDisposed() && editMode.get()) {
-        save(true);
-        editMode.set(false);
+    dom.create((owner) => {
+      // Whenever focus returns to the Clipboard component, close the editor by saving the value.
+      function saveEdit() {
+        if (!editMode.isDisposed() && editMode.get()) {
+          save(true);
+          editMode.set(false);
+        }
       }
+      const app = (window as any).gristApp as App;
+      app.on('clipboard_focus', saveEdit);
+      owner.onDispose(() => app.off('clipboard_focus', saveEdit));
     }),
   ];
 }

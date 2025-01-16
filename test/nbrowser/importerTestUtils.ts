@@ -35,13 +35,20 @@ export const getPreviewDiffCellValues = stackWrapFunc(async (cols: number[], row
 
 // Helper that waits for the diff preview to finish loading.
 export const waitForDiffPreviewToLoad = stackWrapFunc(async (): Promise<void> => {
+  await gu.waitForServer();
   await driver.wait(() => driver.find('.test-importer-preview').isPresent(), 5000);
+  await gu.waitToPass(async () => {
+    const preview = (await getPreviewDiffCellValues([0], [1]))[0];
+    if (preview[0] === undefined && preview[1] === undefined) {
+      throw new Error('sometimes data is a little slow to show up?');
+    }
+  }, 2000);
 });
 
 // Helper that gets the list of visible column matching rows to the left of the preview.
 export const getColumnMatchingRows = stackWrapFunc(async (): Promise<{source: string, destination: string}[]> => {
   return await driver.findAll('.test-importer-column-match-source-destination', async (el) => {
-    const source = await el.find('.test-importer-column-match-formula').getText();
+    const source = await el.find('.test-importer-column-match-formula').getAttribute('textContent');
     const destination = await el.find('.test-importer-column-match-destination').getText();
     return {source, destination};
   });

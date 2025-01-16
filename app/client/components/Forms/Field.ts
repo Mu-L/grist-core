@@ -1,13 +1,24 @@
-import {CHOOSE_TEXT, FormLayoutNode} from 'app/client/components/FormRenderer';
+import {FormLayoutNode, selectPlaceholder} from 'app/client/components/FormRenderer';
 import {buildEditor} from 'app/client/components/Forms/Editor';
 import {FormView} from 'app/client/components/Forms/FormView';
 import {BoxModel, ignoreClick} from 'app/client/components/Forms/Model';
 import * as css from 'app/client/components/Forms/styles';
 import {stopEvent} from 'app/client/lib/domUtils';
+import {makeT} from 'app/client/lib/localization';
 import {refRecord} from 'app/client/models/DocModel';
+import {
+  FormNumberFormat,
+  FormOptionsAlignment,
+  FormOptionsSortOrder,
+  FormSelectFormat,
+  FormTextFormat,
+  FormToggleFormat,
+} from 'app/client/ui/FormAPI';
 import {autoGrow} from 'app/client/ui/forms';
-import {squareCheckbox} from 'app/client/ui2018/checkbox';
+import {cssCheckboxSquare, cssLabel, squareCheckbox} from 'app/client/ui2018/checkbox';
 import {colors} from 'app/client/ui2018/cssVars';
+import {cssRadioInput} from 'app/client/ui2018/radio';
+import {isBlankValue} from 'app/common/gristTypes';
 import {Constructor, not} from 'app/common/gutil';
 import {
   BindableValue,
@@ -21,12 +32,13 @@ import {
   MultiHolder,
   observable,
   Observable,
-  styled,
-  toKo
+  toKo,
 } from 'grainjs';
 import * as ko from 'knockout';
 
 const testId = makeTestId('test-forms-');
+
+const t = makeT('Field');
 
 /**
  * Container class for all fields.
@@ -85,9 +97,6 @@ export class FieldModel extends BoxModel {
       const field = use(this.field);
       return Boolean(use(field.widgetOptionsJson.prop('formRequired')));
     });
-    this.required.onWrite(value => {
-      this.field.peek().widgetOptionsJson.prop('formRequired').setAndSave(value).catch(reportError);
-    });
 
     this.question.onWrite(value => {
       this.field.peek().question.setAndSave(value).catch(reportError);
@@ -100,18 +109,6 @@ export class FieldModel extends BoxModel {
         }
       })
     );
-  }
-
-  public async afterDrop() {
-    // Base class does good job of handling drop.
-    await super.afterDrop();
-    if (this.isDisposed()) { return; }
-
-    // Except when a field is dragged from the creator panel, which stores colId instead of fieldRef (as there is no
-    // field yet). In this case, we need to create a field.
-    if (typeof this.leaf.get() === 'string') {
-      this.leaf.set(await this.view.showColumn(this.leaf.get()));
-    }
   }
 
   public override render(...args: IDomArgs<HTMLElement>): HTMLElement {
@@ -136,7 +133,7 @@ export class FieldModel extends BoxModel {
         box: this,
         overlay,
         removeIcon: 'CrossBig',
-        removeTooltip: 'Hide',
+        removeTooltip: t('Hide'),
         editMode: this.edit,
         content,
       },
@@ -163,6 +160,8 @@ export class FieldModel extends BoxModel {
 }
 
 export abstract class Question extends Disposable {
+  protected field = this.model.field;
+
   constructor(public model: FieldModel) {
     super();
   }
@@ -175,7 +174,7 @@ export abstract class Question extends Disposable {
     return css.cssQuestion(
       testId('question'),
       testType(this.model.colType),
-      this.renderLabel(props, dom.style('margin-bottom', '5px')),
+      this.renderLabel(props),
       this.renderInput(),
       css.cssQuestion.cls('-required', this.model.required),
       ...args
@@ -234,7 +233,7 @@ export abstract class Question extends Disposable {
       css.cssRequiredWrapper(
         testId('label'),
         // When in edit - hide * and change display from grid to display
-        css.cssRequiredWrapper.cls('-required', use => Boolean(use(this.model.required) && !use(this.model.edit))),
+        css.cssRequiredWrapper.cls('-required', use => use(this.model.required) && !use(this.model.edit)),
         dom.maybe(props.edit, () => [
           element = css.cssEditableLabel(
             controller,
@@ -275,62 +274,189 @@ export abstract class Question extends Disposable {
 
 
 class TextModel extends Question {
+  private _format = Computed.create<FormTextFormat>(this, (use) => {
+    const field = use(this.field);
+    return use(field.widgetOptionsJson.prop('formTextFormat')) ?? 'singleline';
+  });
+
+  private _rowCount = Computed.create<number>(this, (use) => {
+    const field = use(this.field);
+    return use(field.widgetOptionsJson.prop('formTextLineCount')) || 3;
+  });
+
   public renderInput() {
+    return dom.domComputed(this._format, (format) => {
+      switch (format) {
+        case 'singleline': {
+          return this._renderSingleLineInput();
+        }
+        case 'multiline': {
+          return this._renderMultiLineInput();
+        }
+      }
+    });
+  }
+
+  private _renderSingleLineInput() {
     return css.cssInput(
-      dom.prop('name', u => u(u(this.model.field).colId)),
-      {disabled: true},
+      dom.prop('name', u => u(u(this.field).colId)),
       {type: 'text', tabIndex: "-1"},
+    );
+  }
+
+  private _renderMultiLineInput() {
+    return css.cssTextArea(
+      dom.prop('name', u => u(u(this.field).colId)),
+      dom.prop('rows', this._rowCount),
+      {tabIndex: "-1"},
     );
   }
 }
 
+class NumericModel extends Question {
+  private _format = Computed.create<FormNumberFormat>(this, (use) => {
+    const field = use(this.field);
+    return use(field.widgetOptionsJson.prop('formNumberFormat')) ?? 'text';
+  });
+
+  public renderInput() {
+    return dom.domComputed(this._format, (format) => {
+      switch (format) {
+        case 'text': {
+          return this._renderTextInput();
+        }
+        case 'spinner': {
+          return this._renderSpinnerInput();
+        }
+      }
+    });
+  }
+
+  private _renderTextInput() {
+    return css.cssInput(
+      dom.prop('name', u => u(u(this.field).colId)),
+      {type: 'text', tabIndex: "-1"},
+    );
+  }
+
+  private _renderSpinnerInput() {
+    return css.cssSpinner(observable(''), {});
+  }
+}
+
 class ChoiceModel extends Question {
-  protected choices: Computed<string[]> = Computed.create(this, use => {
-    // Read choices from field.
-    const list = use(use(use(this.model.field).origCol).widgetOptionsJson.prop('choices')) || [];
+  protected choices: Computed<string[]>;
 
-    // Make sure it is array of strings.
-    if (!Array.isArray(list) || list.some((v) => typeof v !== 'string')) {
-      return [];
-    }
-    return list;
+  protected alignment = Computed.create<FormOptionsAlignment>(this, (use) => {
+    const field = use(this.field);
+    return use(field.widgetOptionsJson.prop('formOptionsAlignment')) ?? 'vertical';
   });
 
-  protected choicesWithEmpty = Computed.create(this, use => {
-    const list: Array<string|null> = Array.from(use(this.choices));
-    // Add empty choice if not present.
-    list.unshift(null);
-    return list;
+  private _format = Computed.create<FormSelectFormat>(this, (use) => {
+    const field = use(this.field);
+    return use(field.widgetOptionsJson.prop('formSelectFormat')) ?? 'select';
   });
 
-  public renderInput(): HTMLElement {
-    const field = this.model.field;
+  private _sortOrder = Computed.create<FormOptionsSortOrder>(this, (use) => {
+    const field = use(this.field);
+    return use(field.widgetOptionsJson.prop('formOptionsSortOrder')) ?? 'default';
+  });
+
+  constructor(model: FieldModel) {
+    super(model);
+    this.choices = Computed.create(this, use => {
+      // Read choices from field.
+      const field = use(this.field);
+      const choices = use(field.widgetOptionsJson.prop('choices'))?.slice() ?? [];
+
+      // Make sure it is an array of strings.
+      if (!Array.isArray(choices) || choices.some((choice) => typeof choice !== 'string')) {
+        return [];
+      } else {
+        const sort = use(this._sortOrder);
+        if (sort !== 'default') {
+          choices.sort((a, b) => a.localeCompare(b));
+          if (sort === 'descending') {
+            choices.reverse();
+          }
+        }
+        return choices;
+      }
+    });
+  }
+
+  public renderInput() {
+    return dom('div',
+      dom.domComputed(this._format, (format) => {
+        if (format === 'select') {
+          return this._renderSelectInput();
+        } else {
+          return this._renderRadioInput();
+        }
+      }),
+      dom.maybe(use => use(this.choices).length === 0, () => [
+        css.cssWarningMessage(css.cssWarningIcon('Warning'), t('No choices configured')),
+      ]),
+    );
+  }
+
+  private _renderSelectInput() {
     return css.cssSelect(
       {tabIndex: "-1"},
       ignoreClick,
-      dom.prop('name', use => use(use(field).colId)),
-      dom.forEach(this.choicesWithEmpty, (choice) => dom('option', choice ?? CHOOSE_TEXT, {value: choice ?? ''})),
+      dom.prop('name', use => use(use(this.field).colId)),
+      dom('option',
+        selectPlaceholder(),
+        {value: ''},
+      ),
+      dom.forEach(this.choices, (choice) => dom('option',
+        choice,
+        {value: choice},
+      )),
+    );
+  }
+
+  private _renderRadioInput() {
+    return css.cssRadioList(
+      css.cssRadioList.cls('-horizontal', use => use(this.alignment) === 'horizontal'),
+      dom.prop('name', use => use(use(this.field).colId)),
+      dom.forEach(this.choices, (choice) => css.cssRadioLabel(
+        cssRadioInput({type: 'radio'}),
+        choice,
+      )),
     );
   }
 }
 
 class ChoiceListModel extends ChoiceModel {
+  private _choices = Computed.create(this, use => {
+    // Support for 30 choices. TODO: make limit dynamic.
+    return use(this.choices).slice(0, 30);
+  });
+
   public renderInput() {
-    const field = this.model.field;
-    return dom('div',
+    const field = this.field;
+    return css.cssCheckboxList(
+      css.cssCheckboxList.cls('-horizontal', use => use(this.alignment) === 'horizontal'),
       dom.prop('name', use => use(use(field).colId)),
-      dom.forEach(this.choices, (choice) => css.cssCheckboxLabel(
-        squareCheckbox(observable(false)),
-        choice
+      dom.forEach(this._choices, (choice) => css.cssCheckboxLabel(
+        css.cssCheckboxLabel.cls('-horizontal', use => use(this.alignment) === 'horizontal'),
+        cssCheckboxSquare({type: 'checkbox'}),
+        choice,
       )),
-      dom.maybe(use => use(this.choices).length === 0, () => [
-        dom('div', 'No choices defined'),
+      dom.maybe(use => use(this._choices).length === 0, () => [
+        css.cssWarningMessage(css.cssWarningIcon('Warning'), t('No choices configured')),
       ]),
     );
   }
 }
 
 class BoolModel extends Question {
+  private _format = Computed.create<FormToggleFormat>(this, (use) => {
+    const field = use(this.field);
+    return use(field.widgetOptionsJson.prop('formToggleFormat')) ?? 'switch';
+  });
+
   public override buildDom(props: {
     edit: Observable<boolean>,
     overlay: Observable<boolean>,
@@ -340,20 +466,35 @@ class BoolModel extends Question {
     return css.cssQuestion(
       testId('question'),
       testType(this.model.colType),
-      cssToggle(
+      css.cssToggle(
         this.renderInput(),
         this.renderLabel(props, css.cssLabelInline.cls('')),
       ),
     );
   }
+
   public override renderInput() {
-    const value = Observable.create(this, true);
-    return dom('div.widget_switch',
+    return dom.domComputed(this._format, (format) => {
+      if (format === 'switch') {
+        return this._renderSwitchInput();
+      } else {
+        return this._renderCheckboxInput();
+      }
+    });
+  }
+
+  private _renderSwitchInput() {
+    return css.cssWidgetSwitch(
       dom.style('--grist-actual-cell-color', colors.lightGreen.toString()),
-      dom.cls('switch_on', value),
-      dom.cls('switch_transition', true),
+      dom.cls('switch_transition'),
       dom('div.switch_slider'),
       dom('div.switch_circle'),
+    );
+  }
+
+  private _renderCheckboxInput() {
+    return cssLabel(
+      cssCheckboxSquare({type: 'checkbox'}),
     );
   }
 }
@@ -363,8 +504,8 @@ class DateModel extends Question {
     return dom('div',
       css.cssInput(
         dom.prop('name', this.model.colId),
-        {type: 'date', style: 'margin-right: 5px; width: 100%;'
-      }),
+        {type: 'date', style: 'margin-right: 5px;'},
+      ),
     );
   }
 }
@@ -374,7 +515,7 @@ class DateTimeModel extends Question {
     return dom('div',
       css.cssInput(
         dom.prop('name', this.model.colId),
-        {type: 'datetime-local', style: 'margin-right: 5px; width: 100%;'}
+        {type: 'datetime-local', style: 'margin-right: 5px;'},
       ),
       dom.style('width', '100%'),
     );
@@ -382,22 +523,41 @@ class DateTimeModel extends Question {
 }
 
 class RefListModel extends Question {
-  protected choices = this._subscribeForChoices();
+  protected options: Computed<{label: string, value: string}[]>;
 
-  public renderInput() {
-    return dom('div',
-      dom.prop('name', this.model.colId),
-      dom.forEach(this.choices, (choice) => css.cssCheckboxLabel(
-        squareCheckbox(observable(false)),
-        String(choice[1] ?? '')
-      )),
-      dom.maybe(use => use(this.choices).length === 0, () => [
-        dom('div', 'No choices defined'),
-      ]),
-    ) as HTMLElement;
+  protected alignment = Computed.create<FormOptionsAlignment>(this, (use) => {
+    const field = use(this.field);
+    return use(field.widgetOptionsJson.prop('formOptionsAlignment')) ?? 'vertical';
+  });
+
+  private _sortOrder = Computed.create<FormOptionsSortOrder>(this, (use) => {
+    const field = use(this.field);
+    return use(field.widgetOptionsJson.prop('formOptionsSortOrder')) ?? 'default';
+  });
+
+  constructor(model: FieldModel) {
+    super(model);
+    this.options = this._getOptions();
   }
 
-  private _subscribeForChoices() {
+  public renderInput() {
+    return css.cssCheckboxList(
+      css.cssCheckboxList.cls('-horizontal', use => use(this.alignment) === 'horizontal'),
+      dom.prop('name', this.model.colId),
+      dom.forEach(this.options, (option) => css.cssCheckboxLabel(
+        squareCheckbox(observable(false)),
+        option.label,
+      )),
+      dom.maybe(use => use(this.options).length === 0, () => [
+        css.cssWarningMessage(
+          css.cssWarningIcon('Warning'),
+          t('No values in show column of referenced table'),
+        ),
+      ]),
+    );
+  }
+
+  private _getOptions() {
     const tableId = Computed.create(this, use => {
       const refTable = use(use(this.model.column).refTable);
       return refTable ? use(refTable.tableId) : '';
@@ -405,43 +565,83 @@ class RefListModel extends Question {
 
     const colId = Computed.create(this, use => {
       const dispColumnIdObs = use(use(this.model.column).visibleColModel);
-      return use(dispColumnIdObs.colId);
+      return use(dispColumnIdObs.colId) || 'id';
     });
 
     const observer = this.model.view.gristDoc.columnObserver(this, tableId, colId);
 
     return Computed.create(this, use => {
-      const unsorted = use(observer);
-      unsorted.sort((a, b) => String(a[1]).localeCompare(String(b[1])));
-      return unsorted.slice(0, 50); // TODO: pagination or a waning
+      const sort = use(this._sortOrder);
+      const values = use(observer)
+        .filter(([_id, value]) => !isBlankValue(value))
+        .map(([id, value]) => ({label: String(value), value: String(id)}));
+      if (sort !== 'default') {
+        values.sort((a, b) => a.label.localeCompare(b.label));
+        if (sort === 'descending') {
+          values.reverse();
+        }
+      }
+      return values.slice(0, 30);
     });
   }
 }
 
 class RefModel extends RefListModel {
-  protected withEmpty = Computed.create(this, use => {
-    const list = Array.from(use(this.choices));
-    // Add empty choice if not present.
-    list.unshift(['', CHOOSE_TEXT]);
-    return list;
+  private _format = Computed.create<FormSelectFormat>(this, (use) => {
+    const field = use(this.field);
+    return use(field.widgetOptionsJson.prop('formSelectFormat')) ?? 'select';
   });
 
   public renderInput() {
+    return dom('div',
+      dom.domComputed(this._format, (format) => {
+        if (format === 'select') {
+          return this._renderSelectInput();
+        } else {
+          return this._renderRadioInput();
+        }
+      }),
+      dom.maybe(use => use(this.options).length === 0, () => [
+        css.cssWarningMessage(
+          css.cssWarningIcon('Warning'),
+          t('No values in show column of referenced table'),
+        ),
+      ]),
+    );
+  }
+
+  private _renderSelectInput() {
     return css.cssSelect(
       {tabIndex: "-1"},
       ignoreClick,
       dom.prop('name', this.model.colId),
-      dom.forEach(this.withEmpty, (choice) => dom('option', String(choice[1] ?? ''), {value: String(choice[0])})),
+      dom('option',
+        selectPlaceholder(),
+        {value: ''},
+      ),
+      dom.forEach(this.options, ({label, value}) => dom('option',
+        label,
+        {value},
+      )),
+    );
+  }
+
+  private _renderRadioInput() {
+    return css.cssRadioList(
+      css.cssRadioList.cls('-horizontal', use => use(this.alignment) === 'horizontal'),
+      dom.prop('name', use => use(use(this.field).colId)),
+      dom.forEach(this.options, ({label, value}) => css.cssRadioLabel(
+        cssRadioInput({type: 'radio'}),
+        label,
+      )),
     );
   }
 }
 
-// TODO: decide which one we need and implement rest.
 const AnyModel = TextModel;
-const NumericModel = TextModel;
-const IntModel = TextModel;
-const AttachmentsModel = TextModel;
 
+// Attachments are not currently supported.
+const AttachmentsModel = TextModel;
 
 function fieldConstructor(type: string): Constructor<Question> {
   switch (type) {
@@ -451,7 +651,7 @@ function fieldConstructor(type: string): Constructor<Question> {
     case 'ChoiceList': return ChoiceListModel;
     case 'Date': return DateModel;
     case 'DateTime': return DateTimeModel;
-    case 'Int': return IntModel;
+    case 'Int': return NumericModel;
     case 'Numeric': return NumericModel;
     case 'Ref': return RefModel;
     case 'RefList': return RefListModel;
@@ -466,12 +666,3 @@ function fieldConstructor(type: string): Constructor<Question> {
 function testType(value: BindableValue<string>) {
   return dom('input', {type: 'hidden'}, dom.prop('value', value), testId('type'));
 }
-
-const cssToggle = styled('div', `
-  display: grid;
-  align-items: center;
-  grid-template-columns: auto 1fr;
-  gap: 8px;
-  padding: 4px 0px;
-  --grist-actual-cell-color: ${colors.lightGreen};
-`);

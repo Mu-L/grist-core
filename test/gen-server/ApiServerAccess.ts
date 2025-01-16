@@ -4,7 +4,7 @@ import {Deps} from 'app/gen-server/ApiServer';
 import {Organization} from 'app/gen-server/entity/Organization';
 import {Product} from 'app/gen-server/entity/Product';
 import {User} from 'app/gen-server/entity/User';
-import {HomeDBManager, UserChange} from 'app/gen-server/lib/HomeDBManager';
+import {HomeDBManager, UserChange} from 'app/gen-server/lib/homedb/HomeDBManager';
 import {SendGridConfig, SendGridMail} from 'app/gen-server/lib/NotifierTypes';
 import axios, {AxiosResponse} from 'axios';
 import {delay} from 'bluebird';
@@ -61,9 +61,9 @@ describe('ApiServerAccess', function() {
       }
     );
     dbManager = server.dbManager;
-    chimpyRef = await dbManager.getUserByLogin(chimpyEmail).then((user) => user!.ref);
-    kiwiRef = await dbManager.getUserByLogin(kiwiEmail).then((user) => user!.ref);
-    charonRef = await dbManager.getUserByLogin(charonEmail).then((user) => user!.ref);
+    chimpyRef = await dbManager.getUserByLogin(chimpyEmail).then((user) => user.ref);
+    kiwiRef = await dbManager.getUserByLogin(kiwiEmail).then((user) => user.ref);
+    charonRef = await dbManager.getUserByLogin(charonEmail).then((user) => user.ref);
     // Listen to user count updates and add them to an array.
     dbManager.on('userChange', ({org, countBefore, countAfter}: UserChange) => {
       if (countBefore === countAfter) { return; }
@@ -1627,7 +1627,7 @@ describe('ApiServerAccess', function() {
         assert.equal(resp.status, 200);
         assert.deepEqual(resp.data.map((org: any) => org.name),
           ['Chimpyland', 'EmptyOrg', 'EmptyWsOrg', 'Fish', 'Flightless',
-            'FreeTeam', 'NASA', 'Primately', 'TestDailyApiLimit']);
+            'FreeTeam', 'NASA', 'Primately', 'TestAuditLogs', 'TestDailyApiLimit']);
        });
     });
 

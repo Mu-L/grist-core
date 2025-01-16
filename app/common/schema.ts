@@ -4,7 +4,7 @@ import { GristObjCode } from "app/plugin/GristData";
 
 // tslint:disable:object-literal-key-quotes
 
-export const SCHEMA_VERSION = 41;
+export const SCHEMA_VERSION = 43;
 
 export const schema = {
 
@@ -41,6 +41,7 @@ export const schema = {
     displayCol          : "Ref:_grist_Tables_column",
     visibleCol          : "Ref:_grist_Tables_column",
     rules               : "RefList:_grist_Tables_column",
+    reverseCol          : "Ref:_grist_Tables_column",
     recalcWhen          : "Int",
     recalcDeps          : "RefList:_grist_Tables_column",
   },
@@ -167,6 +168,8 @@ export const schema = {
     label               : "Text",
     memo                : "Text",
     enabled             : "Bool",
+    watchedColRefList   : "RefList:_grist_Tables_column",
+    options             : "Text",
   },
 
   "_grist_ACLRules": {
@@ -262,6 +265,7 @@ export interface SchemaTypes {
     displayCol: number;
     visibleCol: number;
     rules: [GristObjCode.List, ...number[]]|null;
+    reverseCol: number;
     recalcWhen: number;
     recalcDeps: [GristObjCode.List, ...number[]]|null;
   };
@@ -388,6 +392,8 @@ export interface SchemaTypes {
     label: string;
     memo: string;
     enabled: boolean;
+    watchedColRefList: [GristObjCode.List, ...number[]]|null;
+    options: string;
   };
 
   "_grist_ACLRules": {

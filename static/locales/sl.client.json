@@ -133,7 +133,8 @@
         "Cut": "Izreži",
         "Paste": "Prilepi",
         "Clear values": "Izbriši vrednosti",
-        "Clear cell": "Čista celica"
+        "Clear cell": "Čista celica",
+        "Copy with headers": "Kopiraj z glavami"
     },
     "DocMenu": {
         "Document will be moved to Trash.": "Dokument se bo premaknil v koš.",
@@ -174,7 +175,11 @@
         "Restore": "Obnovi",
         "Move {{name}} to workspace": "Premakni {{name}} v delovni prostor",
         "You are on the {{siteName}} site. You also have access to the following sites:": "Nahajate se na spletnem mestu {{siteName}}. Prav tako imate dostop do naslednjih spletnih mest:",
-        "Examples & Templates": "Primeri & predloge"
+        "Examples & Templates": "Primeri & predloge",
+        "Any documents created in this site will appear here.": "Vsi dokumenti, ustvarjeni na tem mestu, bodo prikazani tukaj.",
+        "Create my first document": "Ustvari moj prvi dokument",
+        "personal site": "osebno spletno mesto",
+        "You have read-only access to this site. Currently there are no documents.": "Do tega mesta imate dostop samo za branje. Trenutno ni dokumentov."
     },
     "GridViewMenus": {
         "Rename column": "Preimenuj stolpec",
@@ -262,11 +267,14 @@
         "Access Details": "Podrobnosti o dostopu",
         "Workspaces": "Delovni prostori",
         "Workspace will be moved to Trash.": "Delovni prostor se bo premaknil v koš.",
-        "Examples & Templates": "Predloge"
+        "Examples & Templates": "Predloge",
+        "Terms of service": "Pogoji storitve",
+        "Grist Resources": "Viri Grista"
     },
     "OnBoardingPopups": {
         "Finish": "Zaključek",
-        "Next": "Naslednji"
+        "Next": "Naslednji",
+        "Previous": "Prejšenj"
     },
     "Pages": {
         "Delete": "Izbriši",
@@ -282,7 +290,8 @@
         "Duplicate rows_one": "Podvoji vrstico",
         "Duplicate rows_other": "Podvoji vrstice",
         "Insert row above": "Vstavi vrstico zgoraj",
-        "View as card": "Kartični pogled"
+        "View as card": "Kartični pogled",
+        "Use as table headers": "Uporabi kot glave tabel"
     },
     "Tools": {
         "Delete": "Izbriši",
@@ -355,7 +364,9 @@
         "Personal Site": "Osebna stran",
         "Team Site": "Spletna stran ekipe",
         "Grist Templates": "Grist predloge",
-        "Legacy": "Zapuščina"
+        "Legacy": "Zapuščina",
+        "Billing Account": "Račun za obračunavanje",
+        "Manage Team": "Upravljanje ekipe"
     },
     "ChartView": {
         "Pick a column": "Izberite stolpec",
@@ -402,7 +413,15 @@
         "{{wrongTypeCount}} non-{{columnType}} columns are not shown_other": "{{wrongTypeCount}} stolpci, ki niso{{columnType}}, niso prikazani",
         "Widget needs to {{read}} the current table.": "Widget mora {{read}} trenutno tabelo.",
         "No {{columnType}} columns in table.": "V tabeli ni stolpcev tipa {{columnType}}.",
-        "Clear selection": "Briši izbor"
+        "Clear selection": "Briši izbor",
+        "Custom URL": "URL po meri",
+        "Developer:": "Razvijalec:",
+        "ACCESS LEVEL": "STOPNJA DOSTOPOV",
+        "Reject": "Zavrni",
+        "Accept": "Sprejmi",
+        "Last updated:": "Zadnja posodobitev:",
+        "Missing description and author information.": "Manjka opis in podatki o avtorju.",
+        "Widget": "Widget"
     },
     "DocHistory": {
         "Activity": "Dejavnost",
@@ -411,7 +430,8 @@
         "Compare to Previous": "Primerjava s prejšnjimi",
         "Snapshots": "Posnetki",
         "Snapshots are unavailable.": "Posnetki niso na voljo.",
-        "Open Snapshot": "Odpri posnetek stanja"
+        "Open Snapshot": "Odpri posnetek stanja",
+        "Only owners have access to snapshots for documents with access rules.": "Samo lastniki imajo dostop do posnetkov za dokumente s pravili dostopa."
     },
     "ExampleInfo": {
         "Check out our related tutorial for how to link data, and create high-productivity layouts.": "Oglejte si sorodno navodilo za povezovanje podatkov in ustvarjanje visokoproduktivnih postavitev.",
@@ -495,7 +515,46 @@
         "Manage Webhooks": "Upravljanje spletnih kljuk",
         "Webhooks": "Spletne kljuke",
         "Engine (experimental {{span}} change at own risk):": "Pogon (eksperimentalno {{span}} spreminjanje na lastno odgovornost):",
-        "API Console": "API Konzola"
+        "API Console": "API Konzola",
+        "API console": "API konzola",
+        "API documentation.": "API dokumentacija.",
+        "Base doc URL: {{docApiUrl}}": "URL osnovnega dokumenta: {{docApiUrl}}",
+        "Coming soon": "Prihaja kmalu",
+        "Copy to clipboard": "Kopiraj v odložišče",
+        "Currency": "Valuta",
+        "Data Engine": "Podatkovna mašina",
+        "Document ID": "ID dokumenta",
+        "Document ID to use whenever the REST API calls for {{docId}}. See {{apiURL}}": "ID dokumenta, ki se uporabi vsakič, ko REST API  pokliče {{docId}}. Oglej si {{apiURL}}",
+        "Find slow formulas": "Poišči počasne formule",
+        "For currency columns": "Za valutne stolpce",
+        "For number and date formats": "Za format števila in datuma",
+        "Formula times": "Časi formule",
+        "API URL copied to clipboard": "URL API-ja kopiran v odložišče",
+        "Default for DateTime columns": "Privzeto za stolpce DateTime",
+        "ID for API use": "ID za uporabo API-ja",
+        "Locale": "Lokalizacija",
+        "Hard reset of data engine": "Ponastavitev podatkovnega mehanizma",
+        "Manage webhooks": "Upravljanje webhookov",
+        "Notify other services on doc changes": "Obvesti druge storitve o spremembah dokumenta",
+        "Python": "Python",
+        "Python version used": "Uporabljena različica Pythona",
+        "Reload": "Ponovno naloži",
+        "Time Zone": "Časovni pas",
+        "Try API calls from the browser": "Poskusi klice API-ja iz brskalnika",
+        "python3 (recommended)": "python3 (priporočeno)",
+        "python2 (legacy)": "python2 (odsvetovano)",
+        "Formula timer": "Časovnik formule",
+        "Reload data engine": "Ponovno naloži podatkovni mehanizem",
+        "Reload data engine?": "Ponovno naložiti podatkovni mehanizem?",
+        "Start timing": "Začni meriti čas",
+        "Stop timing...": "Ustavi merjenje časa ...",
+        "Time reload": "Ponovno nalaganje časa",
+        "Cancel": "Prekliči",
+        "Force reload the document while timing formulas, and show the result.": "Prisilno znova naloži dokument med časovnimi formulami in prikaži rezultat.",
+        "Timing is on": "Merjenje časa je vklopljeno",
+        "You can make changes to the document, then stop timing to see the results.": "Dokument lahko spremeniš in nato ustaviš merjenje časa, da vidiš rezultat.",
+        "Only available to document editors": "Na voljo samo urednikom dokumentov",
+        "Only available to document owners": "Na voljo samo lastnikom dokumentov"
     },
     "GridOptions": {
         "Horizontal Gridlines": "Vodoravne linije",
@@ -612,7 +671,9 @@
         "Enter text": "Vnesi besedilo",
         "Redirect automatically after submission": "Po oddaji samodejno preusmeri",
         "Enter redirect URL": "Vnesi preusmeritveni URL",
-        "Submit button label": "Oznaka gumba za pošiljanje"
+        "Submit button label": "Oznaka gumba za pošiljanje",
+        "Select a field in the form widget to configure.": "Izberi polje v gradniku obrazca, ki ga želiš konfigurirati.",
+        "No field selected": "Nobeno polje ni izbrano"
     },
     "FloatingPopup": {
         "Maximize": "Povečajte",
@@ -676,7 +737,8 @@
         "Opt in to Telemetry": "Prijava na telemetrijo",
         "You have opted in to telemetry. Thank you!": "Prijavili ste se za telemetrijo. Zahvaljujemo se vam!",
         "This instance is opted in to telemetry. Only the site administrator has permission to change this.": "Ta primerek je prijavljen v telemetrijo. To lahko spremeni le skrbnik spletnega mesta.",
-        "GitHub": "GitHub"
+        "GitHub": "GitHub",
+        "Sponsor": "Sponzor"
     },
     "GristTooltips": {
         "Updates every 5 minutes.": "Posodablja se vsakih 5 minut.",
@@ -734,7 +796,16 @@
         "Forms are here!": "Obrazci so tukaj!",
         "Learn more": "Nauči se več",
         "Build simple forms right in Grist and share in a click with our new widget. {{learnMoreButton}}": "Ustvari preproste obrazce neposredno v Gristu in jih deli z enim klikom z našim novim pripomočkom. {{learnMoreButton}}",
-        "These rules are applied after all column rules have been processed, if applicable.": "Ta pravila se uporabijo, ko so obdelana vsa pravila stolpcev, če so na voljo."
+        "These rules are applied after all column rules have been processed, if applicable.": "Ta pravila se uporabijo, ko so obdelana vsa pravila stolpcev, če so na voljo.",
+        "Filter displayed dropdown values with a condition.": "Filtriraj prikazane vrednosti .",
+        "Example: {{example}}": "Primer: {{example}}",
+        "Creates a reverse column in target table that can be edited from either end.": "Ustvari vzvratni stolpec v ciljni tabeli, ki ga je mogoče urejati z obeh koncev.",
+        "To allow multiple assignments, change the type of the Reference column to Reference List.": "Če želiš dovoliti več dodelitev, spremeni vrsto stolpca Reference v Seznam referenc.",
+        "To allow multiple assignments, change the referenced column's type to Reference List.": "Če želiš omogočiti več dodelitev, spremeni vrsto referenčnega stolpca v Referenčni seznam.",
+        "Two-way references are not currently supported for Formula or Trigger Formula columns": "Dvosmerne reference trenutno niso podprte za stolpce formule ali formule sprožilca",
+        "Community widgets are created and maintained by Grist community members.": "Pripomočke skupnosti ustvarjajo in vzdržujejo člani skupnosti Grist.",
+        "This limitation occurs when one end of a two-way reference is configured as a single Reference.": "Do te omejitve pride, ko je en konec dvosmerne reference konfiguriran kot ena sama referenca.",
+        "This limitation occurs when one column in a two-way reference has the Reference type.": "Do te omejitve pride, ko ima en stolpec v dvosmernem sklicu vrsto Reference."
     },
     "UserManager": {
         "Anyone with link ": "Vsakdo s povezavo ",
@@ -842,7 +913,9 @@
         "Help Center": "Center za pomoč",
         "Contribute": "Prispevajte",
         "Support Grist page": "Grist podpora",
-        "Opted In": "Prijavljeno"
+        "Opted In": "Prijavljeno",
+        "Admin Panel": "Skrbniški panel",
+        "Thank you! Your trust and support is greatly appreciated. Opt out any time from the {{link}} in the user menu.": "Hvala ti! Tvoje zaupanje in podporo zelo cenimo. Kadar koli se odjavi na {{link}} v uporabniškem meniju."
     },
     "HomeIntro": {
         "personal site": "osebna stran",
@@ -869,7 +942,9 @@
         "Welcome to Grist!": "Dobrodošli v Gristu!",
         "Visit our {{link}} to learn more about Grist.": "Obiščite našo spletno stran {{link}} da izveste več o Grisstu.",
         "Sign in": "Prijavi se",
-        "To use Grist, please either sign up or sign in.": "Če želiš uporabljati Grist, se prijavi ali prvič prijavi."
+        "To use Grist, please either sign up or sign in.": "Če želiš uporabljati Grist, se prijavi ali prvič prijavi.",
+        "Learn more in our {{helpCenterLink}}.": "Izvedi več v našem {{helpCenterLink}}.",
+        "Only show documents": "Pokaži samo dokumente"
     },
     "WelcomeSitePicker": {
         "You have access to the following Grist sites.": "Imate dostop do naslednjih Grist spletnih mest .",
@@ -897,7 +972,12 @@
         "Unsaved": "Neshranjeno",
         "Save Document": "Shrani dokument",
         "Save Copy": "Shrani kopijo",
-        "Return to {{termToUse}}": "Vrnitev na {{termToUse}}"
+        "Return to {{termToUse}}": "Vrnitev na {{termToUse}}",
+        "Export as...": "Izvozi kot ...",
+        "Comma Separated Values (.csv)": "Vrednosti, ločene z vejicami (.csv)",
+        "DOO Separated Values (.dsv)": "DOO ločene vrednosti (.dsv)",
+        "Microsoft Excel (.xlsx)": "Microsoft Excel (.xlsx)",
+        "Tab Separated Values (.tsv)": "Vrednosti, ločene s tabulatorji (.tsv)"
     },
     "NotifyUI": {
         "Go to your free personal site": "Pojdite na brezplačno osebno spletno mesto",
@@ -987,7 +1067,22 @@
     },
     "WebhookPage": {
         "Clear Queue": "Počisti čakalno vrsto",
-        "Webhook Settings": "Nastavitve Webhook"
+        "Webhook Settings": "Nastavitve Webhook",
+        "Enabled": "Omogočeno",
+        "Memo": "Beležka",
+        "Name": "Ime",
+        "Ready Column": "Pripravljen stolpec",
+        "Removed webhook.": "Odstranjen webhook.",
+        "Sorry, not all fields can be edited.": "Žal vseh polj ni mogoče urejati.",
+        "Status": "Status",
+        "Table": "Tabela",
+        "Filter for changes in these columns (semicolon-separated ids)": "Filter za spremembe v teh stolpcih (id-ji, ločeni s podpičjem)",
+        "Cleared webhook queue.": "Čakalna vrsta webhook je počiščena.",
+        "URL": "URL",
+        "Webhook Id": "Webhook ID",
+        "Columns to check when update (separated by ;)": "Stolpci za preverjanje ob posodobitvi (ločeni z ;)",
+        "Event Types": "Vrste dogodkov",
+        "Header Authorization": "Pooblastilo za glavo"
     },
     "RecordLayout": {
         "Updating record layout.": "Posodobitev postavitve zapisa."
@@ -1028,7 +1123,8 @@
         "Rule {{length}}": "Pravilo {{length}}"
     },
     "TopBar": {
-        "Manage Team": "Upravljanje ekipe"
+        "Manage Team": "Upravljanje ekipe",
+        "Manage team": "Uredi ekipo"
     },
     "UserManagerModel": {
         "View & Edit": "Ogled in urejanje",
@@ -1102,7 +1198,9 @@
         "Build your own form": "Ustvari svoj obrazec",
         "Powered by": "Poganja ga",
         "An unknown error occurred.": "Prišlo je do neznane napake.",
-        "Form not found": "Ne najdem obrazca"
+        "Form not found": "Ne najdem obrazca",
+        "Sign-in failed{{suffix}}": "Prijava ni uspela{{suffix}}",
+        "Failed to log in.{{separator}}Please try again or contact support.": "Prijava ni uspela.{{separator}}Poskusi znova ali se obrni na podporo."
     },
     "WidgetTitle": {
         "DATA TABLE NAME": "IME PODATKOVNE TABELE",
@@ -1232,20 +1330,31 @@
         "Row Style": "Slog vrstice",
         "Add another rule": "Dodaj dodatno pravilo",
         "Add conditional style": "Dodaj pogojni slog",
-        "Error in style rule": "Napaka v slogovnem pravilu"
+        "Error in style rule": "Napaka v slogovnem pravilu",
+        "IF...": "ČE ...",
+        "Conditional Style": "Pogojni slog"
     },
     "EditorTooltip": {
         "Convert column to formula": "Pretvori stolpec v formulo"
     },
     "NTextBox": {
         "false": "napačno",
-        "true": "pravilno"
+        "true": "pravilno",
+        "Lines": "Ćrte",
+        "Field Format": "Oblika polja",
+        "Multi line": "Več vrstic",
+        "Single line": "Ena vrstica"
     },
     "NumericTextBox": {
         "Decimals": "Decimalke",
         "Currency": "Valuta",
         "Default currency ({{defaultCurrency}})": "Privzeta valuta ({{defaultCurrency}})",
-        "Number Format": "Format številke"
+        "Number Format": "Format številke",
+        "Field Format": "Oblika polja",
+        "Spinner": "Spinner",
+        "Text": "Tekst",
+        "max": "maks",
+        "min": "min"
     },
     "Reference": {
         "CELL FORMAT": "FORMAT CELICE",
@@ -1297,7 +1406,8 @@
         "Got it": "Razumem",
         "Don't show again": "Ne pokaži več",
         "Are you sure you want to delete these records?": "Ali si prepričan, da želiš izbrisati te zapise?",
-        "Delete": "Briši"
+        "Delete": "Briši",
+        "TIP": "NAMIG"
     },
     "sendToDrive": {
         "Sending file to Google Drive": "Pošiljanje datoteke v Google Drive"
@@ -1317,7 +1427,21 @@
         "Publish": "Objavi",
         "Unpublish your form?": "Želiš preklicati objavo obrazca?",
         "Publish your form?": "Želiš objaviti obrazec?",
-        "Unpublish": "Prekliči objavo"
+        "Unpublish": "Prekliči objavo",
+        "Link copied to clipboard": "Povezava je bila kopirana v odložišče",
+        "Preview": "Predogled",
+        "Reset": "Ponastaviti",
+        "Save your document to publish this form.": "Shrani dokument, da objaviš ta obrazec.",
+        "Share this form": "Deli ta dokument",
+        "View": "Pogled",
+        "Anyone with the link below can see the empty form and submit a response.": "Vsakdo s spodnjo povezavo si lahko ogleda prazen obrazec in odda odgovor.",
+        "Are you sure you want to reset your form?": "Ali si prepričan, da želiš ponastaviti obrazec?",
+        "Code copied to clipboard": "Koda je bila kopirana v odložišče",
+        "Copy code": "Kopiraj kodo",
+        "Copy link": "Kopiraj povezavo",
+        "Embed this form": "Vdelaj ta obrazec",
+        "Reset form": "Ponastavi obrazec",
+        "Share": "Deli"
     },
     "Menu": {
         "Building blocks": "Gradniki",
@@ -1352,7 +1476,18 @@
     },
     "FormConfig": {
         "Required field": "Obvezno polje",
-        "Field rules": "Pravila polj"
+        "Field rules": "Pravila polj",
+        "Descending": "Padajoče",
+        "Field Format": "Format polja",
+        "Field Rules": "Pravila polja",
+        "Horizontal": "Vodoraven",
+        "Options Alignment": "Poravnava možnosti",
+        "Options Sort Order": "Vrstni red Možnosti",
+        "Radio": "Radio",
+        "Select": "Izberi",
+        "Vertical": "Navpičen",
+        "Ascending": "Naraščajoče",
+        "Default": "Privzeto"
     },
     "CustomView": {
         "To use this widget, please map all non-optional columns from the creator panel on the right.": "Če želite uporabiti ta pripomoček, preslikajte vse neobvezne stolpce na plošči za ustvarjanje na desni.",
@@ -1376,7 +1511,8 @@
     },
     "FormSuccessPage": {
         "Form Submitted": "Obrazec oddan",
-        "Thank you! Your response has been recorded.": "Hvala ti! Tvoj odgovor je bil zabeležen."
+        "Thank you! Your response has been recorded.": "Hvala ti! Tvoj odgovor je bil zabeležen.",
+        "Submit new response": "Predloži nov odgovor"
     },
     "DateRangeOptions": {
         "Last 30 days": "Zadnjih 30 dni",
@@ -1387,5 +1523,271 @@
         "This week": "Ta teden",
         "This year": "To leto",
         "Today": "Danes"
+    },
+    "MappedFieldsConfig": {
+        "Clear": "Počisti",
+        "Unmapped": "Nepreslikan",
+        "Map fields": "Preslikaj polja",
+        "Mapped": "Preslikan",
+        "Select All": "Izberi vse",
+        "Unmap fields": "Nepreslikana polja"
+    },
+    "Section": {
+        "Insert section above": "Vstavi razdelek zgoraj",
+        "Insert section below": "Vstavite razdelek spodaj"
+    },
+    "AdminPanel": {
+        "Help us make Grist better": "Pomagaj nam izboljšati Grist",
+        "Home": "Domov",
+        "Admin Panel": "Skrbniški panel",
+        "Current": "Trenutno",
+        "Current version of Grist": "Trenutna različica Grista",
+        "Sponsor": "Sponzor",
+        "Support Grist": "Podpora Gristu",
+        "Telemetry": "Telemetrija",
+        "Support Grist Labs on GitHub": "Podpri Grist Labs na GitHubu",
+        "Version": "Verzija",
+        "Auto-check when this page loads": "Samodejno preveri, ko se ta stran naloži",
+        "Check now": "Preveri",
+        "Checking for updates...": "Iskanje posodobitev ...",
+        "Error": "Napaka",
+        "Error checking for updates": "Napaka pri preverjanju posodobitev",
+        "Grist is up to date": "Grist je posodobljen",
+        "Last checked {{time}}": "Nazadnje preverjeno {{time}}",
+        "Learn more.": "Nauči se več.",
+        "Newer version available": "Na voljo je novejša različica",
+        "No information available": "Podatki niso na voljo",
+        "OK": "OK",
+        "Sandbox settings for data engine": "Nastavitve peskovnika za podatkovni mehanizem",
+        "Sandboxing": "Peskovnik",
+        "Security Settings": "Varnostne nastavitve",
+        "Updates": "Posodobitve",
+        "unconfigured": "nekonfigurirano",
+        "unknown": "neznano",
+        "Grist releases are at ": "Grist verzije so pri ",
+        "Grist allows for very powerful formulas, using Python. We recommend setting the environment variable GRIST_SANDBOX_FLAVOR to gvisor if your hardware supports it (most will), to run formulas in each document within a sandbox isolated from other documents and isolated from the network.": "Grist omogoča zelo zmogljive formule z uporabo Pythona. Priporočamo, da spremenljivko okolja GRIST_SANDBOX_FLAVOR nastavite na gvisor, če vaša strojna oprema to podpira (večina bo), da zaženete formule v vsakem dokumentu znotraj peskovnika, izoliranega od drugih dokumentov in izoliranega od omrežja.",
+        "Authentication": "Preverjanje pristnosti",
+        "Check succeeded.": "Preverjanje uspelo.",
+        "Current authentication method": "Trenutna metoda preverjanja pristnosti",
+        "Details": "Podrobnosti",
+        "No fault detected.": "Ni zaznane napake.",
+        "Notes": "Opombe",
+        "Check failed.": "Preverjanje ni uspelo.",
+        "Grist allows different types of authentication to be configured, including SAML and OIDC.     We recommend enabling one of these if Grist is accessible over the network or being made available     to multiple people.": "Grist omogoča konfiguracijo različnih vrst avtentikacije, vključno s SAML in OIDC. Priporočamo, da omogočiš enega od teh, če je Grist dostopen prek omrežja ali je na voljo več osebam.",
+        "Or, as a fallback, you can set: {{bootKey}} in the environment and visit: {{url}}": "Lahko pa kot nadomestno možnost nastavite: {{bootKey}} v okolju in obiščete: {{url}}",
+        "Results": "Rezultati",
+        "Self Checks": "Samopregledi",
+        "You do not have access to the administrator panel.\nPlease log in as an administrator.": "Nimaš dostopa do skrbniške plošče.\nPrijavi se kot skrbnik.",
+        "Administrator Panel Unavailable": "Skrbniška plošča ni na voljo",
+        "Grist allows different types of authentication to be configured, including SAML and OIDC. We recommend enabling one of these if Grist is accessible over the network or being made available to multiple people.": "Grist omogoča konfiguracijo različnih vrst avtentikacije, vključno s SAML in OIDC. Priporočamo, da omogočiš enega od teh, če je Grist dostopen prek omrežja ali je na voljo več osebam.",
+        "Key to sign sessions with": "Ključ za podpisovanje sej",
+        "Session Secret": "Skrivnost seje",
+        "Grist signs user session cookies with a secret key. Please set this key via the environment variable GRIST_SESSION_SECRET. Grist falls back to a hard-coded default when it is not set. We may remove this notice in the future since session IDs have been updated to be inherently cryptographically secure.": "Grist podpisuje piškotke uporabniške seje s skrivnim ključem. Ta ključ nastavite prek spremenljivke okolja GRIST_SESSION_SECRET. Grist se vrne na trdo kodirano privzeto vrednost, če ni nastavljena. To obvestilo bomo morda odstranili v prihodnosti, saj so ID-ji sej, ustvarjeni od različice 1.1.16, sami po sebi kriptografsko varni.",
+        "Grist signs user session cookies with a secret key. Please set this key via the environment variable GRIST_SESSION_SECRET. Grist falls back to a hard-coded default when it is not set. We may remove this notice in the future as session IDs generated since v1.1.16 are inherently cryptographically secure.": "Grist podpisuje piškotke uporabniške seje s skrivnim ključem. Ta ključ nastavite prek spremenljivke okolja GRIST_SESSION_SECRET. Grist se vrne na trdo kodirano privzeto vrednost, če ni nastavljena. To obvestilo bomo morda odstranili v prihodnosti, saj so ID-ji sej, ustvarjeni od različice 1.1.16, sami po sebi kriptografsko varni.",
+        "Enable Grist Enterprise": "Omogoči Grist Enterprise",
+        "Enterprise": "Podjetje",
+        "checking": "preverjanje"
+    },
+    "ChoiceEditor": {
+        "Error in dropdown condition": "Napaka v spustnem meniju",
+        "No choices matching condition": "Ni izbire, ki se ujema z pogojem",
+        "No choices to select": "Ni izbire"
+    },
+    "ChoiceListEditor": {
+        "Error in dropdown condition": "Napaka v spustnem meniju",
+        "No choices matching condition": "Ni izbire za dane pogoje",
+        "No choices to select": "Ni izbire"
+    },
+    "CreateTeamModal": {
+        "Cancel": "Prekliči",
+        "Billing is not supported in grist-core": "Zaračunavanje ni podprto v grist-core",
+        "Choose a name and url for your team site": "Izberi ime in url za spletno mesto tvoje ekipe",
+        "Create site": "Ustvari spletno mesto",
+        "Domain name is invalid": "Ime domene ni veljavno",
+        "Domain name is required": "Ime domene je obvezno",
+        "Go to your site": "Pojdi na svoje spletno mesto",
+        "Team name": "Ime ekipe",
+        "Team name is required": "Potrebno je ime ekipe",
+        "Team site created": "Spletno mesto ekipe je ustvarjeno",
+        "Team url": "URL ekipe",
+        "Work as a Team": "Delajte kot ekipa"
+    },
+    "Field": {
+        "No values in show column of referenced table": "Ni vrednosti v prikaznem stolpcu referenčne tabele",
+        "No choices configured": "Ni konfiguriranih izbir"
+    },
+    "Toggle": {
+        "Field Format": "Format Polja",
+        "Switch": "Stikalo",
+        "Checkbox": "Potrditveno polje"
+    },
+    "Columns": {
+        "Remove Column": "Odstrani stolpec"
+    },
+    "DropdownConditionEditor": {
+        "Enter condition.": "Vnesi pogoj"
+    },
+    "ReferenceUtils": {
+        "Error in dropdown condition": "Napaka v spustnem pogoju",
+        "No choices to select": "Ni izbire",
+        "No choices matching condition": "Ni izbora, ki ustreza pogoju"
+    },
+    "DropdownConditionConfig": {
+        "Set dropdown condition": "Nastqavi dropdown pogoj",
+        "Dropdown Condition": "Pogoj za spustni menu",
+        "Invalid columns: {{colIds}}": "Neveljavni stolpci: {{colIds}}"
+    },
+    "FormRenderer": {
+        "Search": "Poišči",
+        "Select...": "Izberi",
+        "Submit": "Predloži",
+        "Reset": "Ponastavi"
+    },
+    "widgetTypesMap": {
+        "Calendar": "Koledar",
+        "Card": "Kartica",
+        "Card List": "Seznam kartic",
+        "Chart": "grafikon",
+        "Custom": "Po meri",
+        "Form": "Forma",
+        "Table": "Tabela"
+    },
+    "TimingPage": {
+        "Loading timing data. Don't close this tab.": "Nalaganje časovnih podatkov. Ne zapri tega zavihka.",
+        "Max Time (s)": "Največji čas (i)",
+        "Number of Calls": "Število klicev",
+        "Table ID": "ID tabele",
+        "Total Time (s)": "Skupni čas",
+        "Average Time (s)": "Povprečni čas (i)",
+        "Column ID": "ID stolpca",
+        "Formula timer": "Časovnik formule"
+    },
+    "DocTutorial": {
+        "Click to expand": "Kliknite za razširitev",
+        "Do you want to restart the tutorial? All progress will be lost.": "Ali želite znova zagnati učbenik? Ves napredek bo izgubljen.",
+        "End tutorial": "Končaj vadnico",
+        "Finish": "Končaj",
+        "Next": "Naslednji",
+        "Previous": "Prejšnji",
+        "Restart": "Ponovni zagon"
+    },
+    "OnboardingCards": {
+        "3 minute video tour": "3 minutni video ogled",
+        "Complete our basics tutorial": "Dokončaj našo vadnico o osnovah",
+        "Complete the tutorial": "Dokončaj vadnico",
+        "Learn the basic of reference columns, linked widgets, column types, & cards.": "Nauči se osnov referenčnih stolpcev, povezanih pripomočkov, vrst stolpcev in kartic.",
+        "Learn the basics of reference columns, linked widgets, column types, & cards.": "Naučite se osnov referenčnih stolpcev, povezanih pripomočkov, vrst stolpcev in kartic."
+    },
+    "OnboardingPage": {
+        "Back": "Nazaj",
+        "Next step": "Naslednji korak",
+        "Skip step": "Preskoči korak",
+        "Skip tutorial": "Preskoči vadnico",
+        "Tell us who you are": "Povej nam, kdo si",
+        "Type here": "Piši tukaj",
+        "Welcome": "Dobrodošel",
+        "What brings you to Grist (you can select multiple)?": "Kaj te je pripeljalo do Grista (lahko izbereš več)?",
+        "What is your role?": "Kakšna je tvoja vloga?",
+        "What organization are you with?": "V kateri organizaciji si?",
+        "Your organization": "Tvoja organizacija",
+        "Your role": "Tvoja vloga",
+        "Go hands-on with the Grist Basics tutorial": "Preizkusi vadnico Osnove Grista",
+        "Discover Grist in 3 minutes": "Odkrij Grist v 3 minutah",
+        "Go to the tutorial!": "Pojdi na vadnico!"
+    },
+    "ToggleEnterpriseWidget": {
+        "Disable Grist Enterprise": "Onemogoči Grist Enterprise",
+        "Enable Grist Enterprise": "Omogoči Grist Enterprise",
+        "Grist Enterprise is **enabled**.": "Grist Enterprise je **omogočen**.",
+        "An activation key is used to run Grist Enterprise after a trial period\nof 30 days has expired. Get an activation key by [signing up for Grist\nEnterprise]({{signupLink}}). You do not need an activation key to run\nGrist Core.\n\nLearn more in our [Help Center]({{helpCenter}}).": "Za zagon Grist Enterprise po poskusnem obdobju 30 dni potrebujete aktivacijski ključ. Pridobite aktivacijski ključ tako, da se [prijavite za Grist\nEnterprise]({{signupLink}}). Za delovanje Grist Core ne potrebujete aktivacijskega ključa\n.\n\nIzvedite več v našem [centru za pomoč]({{helpCenter}})."
+    },
+    "ViewLayout": {
+        "Delete": "Briši",
+        "Delete data and this widget.": "Izbriši podatke in ta pripomoček.",
+        "Keep data and delete widget. Table will remain available in {{rawDataLink}}": "Ohranite podatke in izbrišite pripomoček. Tabela bo ostala na voljo v {{rawDataLink}}",
+        "Table {{tableName}} will no longer be visible": "Tabela {{tableName}} ne bo več vidna",
+        "raw data page": "stran z neobdelanimi podatki"
+    },
+    "AdminPanelName": {
+        "Admin Panel": "Skrbniška plošča"
+    },
+    "CustomWidgetGallery": {
+        "(Missing info)": "(Manjkajo informacije)",
+        "Add Widget": "Dodaj pripomoček",
+        "Add Your Own Widget": "Dodajte svoj pripomoček",
+        "Add a widget from outside this gallery.": "Dodaj pripomoček zunaj te galerije.",
+        "Cancel": "Prekliči",
+        "Change Widget": "Spremeni pripomoček",
+        "Developer:": "razvijalec:",
+        "Grist Widget": "Grist Pripomoček",
+        "Learn more about Custom Widgets": "Izvedite več o pripomočkih po meri",
+        "No matching widgets": "Ni ujemajočih se pripomočkov",
+        "Search": "Iskanje",
+        "Widget URL": "URL pripomočka",
+        "Choose Custom Widget": "Izberite Pripomoček po meri",
+        "Community Widget": "Pripomoček skupnosti",
+        "Custom URL": "URL po meri",
+        "Last updated:": "Zadnja posodobitev:"
+    },
+    "markdown": {
+        "The toggle is **off**": "Preklop je **izklopljen**",
+        "The toggle is **on**": "Preklop je **vklopljen**",
+        "# New Markdown Function\n *\n *      We can _write_ [the usual Markdown](https:": {
+            "": {
+                "markdownguide.org) *inside*\n *      a Grainjs element.": "# Nova funkcija Markdown\n *\n * Lahko _napišemo_ [običajni Markdown](https://markdownguide.org) *znotraj*\n * element Grainjs."
+            }
+        }
+    },
+    "markdown.d": {
+        "The toggle is **on**": "Preklop je **vklopljen**",
+        "The toggle is **off**": "Preklop je **izklopljen**",
+        "# New Markdown Function\n *\n *      We can _write_ [the usual Markdown](https:": {
+            "": {
+                "markdownguide.org) *inside*\n *      a Grainjs element.": "# Nova funkcija Markdown\n *\n * Lahko _napišemo_ [običajni Markdown](https://markdownguide.org) *znotraj*\n * element Grainjs."
+            }
+        }
+    },
+    "HomeIntroCards": {
+        "3 minute video tour": "3 minutni video ogled",
+        "Blank document": "Prazen dokument",
+        "Finish our basics tutorial": "Dokončaj našo vadnico o osnovah",
+        "Learn more {{webinarsLinks}}": "Več o tem {{webinarsLinks}}",
+        "Start a new document": "Začni nov dokument",
+        "Templates": "Predloge",
+        "Tutorial": "Vadnica",
+        "Find solutions and explore more resources {{helpCenterLink}}": "Poiščite rešitve in raziščite več virov {{helpCenterLink}}",
+        "Help center": "Center za pomoč",
+        "Import file": "Uvozi datoteko",
+        "Webinars": "Spletni seminarji"
+    },
+    "ReverseReferenceConfig": {
+        "Add two-way reference": "Dodaj dvosmerno referenco",
+        "Delete column {{column}} in table {{table}}?": "Želiš izbrisati stolpec {{column}} v tabeli {{table}}?",
+        "It is the reverse of the reference column {{column}} in table {{table}}.": "Je obratna stran referenčnega stolpca {{column}} v tabeli {{table}}.",
+        "Two-way Reference": "Dvosmerna referenca",
+        "Delete two-way reference?": "Želiš izbrisati dvosmerno referenco?",
+        "Target table": "Ciljna tabela",
+        "Column": "Stolpec",
+        "Delete": "Izbriši",
+        "Table": "Tabela"
+    },
+    "SupportGristButton": {
+        "Admin Panel": "Skrbniška plošča",
+        "Close": "Zapri",
+        "Help Center": "Center za pomoč",
+        "Opted In": "Omogočeno",
+        "Opt in to Telemetry": "Omogoči uporabo telemetrije",
+        "Support Grist": "Podpora Gristu",
+        "Thank you! Your trust and support is greatly appreciated. Opt out any time from the {{link}} in the user menu.": "Hvala! Vaše zaupanje in podporo zelo cenimo. Kadar koli se odjavite na {{link}} v uporabniškem meniju."
+    },
+    "buildReassignModal": {
+        "Cancel": "Prekliči",
+        "Each {{targetTable}} record may only be assigned to a single {{sourceTable}} record.": "Vsak zapis {{targetTable}} je lahko dodeljen samo enemu zapisu {{sourceTable}}.",
+        "Reassign": "Prerazporedi",
+        "Reassign to new {{sourceTable}} records.": "Ponovno dodelite novim zapisom {{sourceTable}}.",
+        "Reassign to {{sourceTable}} record {{sourceName}}.": "Znova dodeli zapisu {{sourceTable}} {{sourceName}}.",
+        "Record already assigned_one": "Zapis je že dodeljen",
+        "Record already assigned_other": "Zapis je že dodeljen",
+        "{{targetTable}} record {{targetName}} is already assigned to {{sourceTable}} record          {{oldSourceName}}.": "Zapis {{targetTable}} {{targetName}} je že dodeljen zapisu {{sourceTable}} {{oldSourceName}}."
     }
 }

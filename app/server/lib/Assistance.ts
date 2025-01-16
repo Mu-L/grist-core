@@ -6,16 +6,16 @@ import {
   AssistanceContext,
   AssistanceMessage,
   AssistanceRequest,
-  AssistanceResponse
+  AssistanceResponse,
 } from 'app/common/AssistancePrompts';
 import {delay} from 'app/common/delay';
 import {DocAction} from 'app/common/DocActions';
 import {ActiveDoc} from 'app/server/lib/ActiveDoc';
-import {getDocSessionUser, OptDocSession} from 'app/server/lib/DocSession';
+import {OptDocSession} from 'app/server/lib/DocSession';
 import log from 'app/server/lib/log';
+import {getFullUser, getLogMeta} from 'app/server/lib/sessionUtils';
+import {createHash} from 'crypto';
 import fetch from 'node-fetch';
-import {createHash} from "crypto";
-import {getLogMetaFromDocSession} from "./serverUtils";
 
 // These are mocked/replaced in tests.
 // fetch is also replacing in the runCompletion script to add caching.
@@ -148,8 +148,8 @@ class RetryableError extends Error {
  * An optional ASSISTANT_MAX_TOKENS can be specified.
  */
 export class OpenAIAssistant implements Assistant {
-  public static DEFAULT_MODEL = "gpt-3.5-turbo-0613";
-  public static DEFAULT_LONGER_CONTEXT_MODEL = "gpt-3.5-turbo-16k-0613";
+  public static DEFAULT_MODEL = "gpt-4o-2024-08-06";
+  public static DEFAULT_LONGER_CONTEXT_MODEL = "";
 
   private _apiKey?: string;
   private _model?: string;
@@ -158,8 +158,7 @@ export class OpenAIAssistant implements Assistant {
   private _maxTokens = process.env.ASSISTANT_MAX_TOKENS ?
       parseInt(process.env.ASSISTANT_MAX_TOKENS, 10) : undefined;
 
-  public constructor() {
-    const apiKey = process.env.ASSISTANT_API_KEY || process.env.OPENAI_API_KEY;
+  public constructor(apiKey: string | undefined) {
     const endpoint = process.env.ASSISTANT_CHAT_COMPLETION_ENDPOINT;
     if (!apiKey && !endpoint) {
       throw new Error('Please set either OPENAI_API_KEY or ASSISTANT_CHAT_COMPLETION_ENDPOINT');
@@ -257,6 +256,7 @@ export class OpenAIAssistant implements Assistant {
         headers: {
           ...(this._apiKey ? {
             "Authorization": `Bearer ${this._apiKey}`,
+            "api-key": this._apiKey,
           } : undefined),
           "Content-Type": "application/json",
         },
@@ -276,7 +276,7 @@ export class OpenAIAssistant implements Assistant {
     const errorCode = result.error?.code;
     const errorMessage = result.error?.message;
     if (errorCode === "context_length_exceeded" || result.choices?.[0].finish_reason === "length") {
-      log.warn("OpenAI context length exceeded: ", errorMessage);
+      log.warn("AI context length exceeded: ", errorMessage);
       if (messages.length <= 2) {
         throw new TokensExceededFirstMessageError();
       } else {
@@ -284,11 +284,11 @@ export class OpenAIAssistant implements Assistant {
       }
     }
     if (errorCode === "insufficient_quota") {
-      log.error("OpenAI billing quota exceeded!!!");
+      log.error("AI service provider billing quota exceeded!!!");
       throw new QuotaExceededError();
     }
     if (apiResponse.status !== 200) {
-      throw new Error(`OpenAI API returned status ${apiResponse.status}: ${resultText}`);
+      throw new Error(`AI service provider API returned status ${apiResponse.status}: ${resultText}`);
     }
     return result.choices[0].message.content;
   }
@@ -485,11 +485,13 @@ class EchoAssistant implements Assistant {
  * Instantiate an assistant, based on environment variables.
  */
 export function getAssistant() {
-  if (process.env.OPENAI_API_KEY === 'test') {
+  const apiKey = process.env.ASSISTANT_API_KEY || process.env.OPENAI_API_KEY;
+
+  if (apiKey === 'test') {
     return new EchoAssistant();
   }
-  if (process.env.OPENAI_API_KEY || process.env.ASSISTANT_CHAT_COMPLETION_ENDPOINT) {
-    return new OpenAIAssistant();
+  if (apiKey || process.env.ASSISTANT_CHAT_COMPLETION_ENDPOINT) {
+    return new OpenAIAssistant(apiKey);
   }
   throw new Error('Please set OPENAI_API_KEY or ASSISTANT_CHAT_COMPLETION_ENDPOINT');
 }
@@ -559,13 +561,13 @@ async function completionToResponse(
 }
 
 function getUserHash(session: OptDocSession): string {
-  const user = getDocSessionUser(session);
+  const user = getFullUser(session);
   // Make it a bit harder to guess the user ID.
   const salt = "7a8sb6987asdb678asd687sad6boas7f8b6aso7fd";
   const hashSource = `${user?.id} ${user?.ref} ${salt}`;
   const hash = createHash('sha256').update(hashSource).digest('base64');
   // So that if we get feedback about a user ID hash, we can
   // search for the hash in the logs to find the original user ID.
-  log.rawInfo("getUserHash", {...getLogMetaFromDocSession(session), userRef: user?.ref, hash});
+  log.rawInfo("getUserHash", {...getLogMeta(session), userRef: user?.ref, hash});
   return hash;
 }

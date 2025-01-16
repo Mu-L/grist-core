@@ -9,6 +9,7 @@ import {mediaSmall, testId, theme, vars} from 'app/client/ui2018/cssVars';
 import {loadingSpinner} from 'app/client/ui2018/loaders';
 import {cssMenuElem} from 'app/client/ui2018/menus';
 import {waitGrainObs} from 'app/common/gutil';
+import {MaybePromise} from 'app/plugin/gutil';
 import {Computed, Disposable, dom, DomContents, DomElementArg, input, keyframes,
   MultiHolder, Observable, styled} from 'grainjs';
 import {IOpenController, IPopupOptions, PopupControl, popupOpen} from 'popweasel';
@@ -356,7 +357,7 @@ export interface ConfirmModalOptions {
 export function confirmModal(
   title: DomElementArg,
   btnText: DomElementArg,
-  onConfirm: (dontShowAgain?: boolean) => Promise<void>,
+  onConfirm: (dontShowAgain?: boolean) => MaybePromise<void>,
   options: ConfirmModalOptions = {},
 ): void {
   const {
@@ -383,7 +384,7 @@ export function confirmModal(
         ),
       ],
       saveLabel: btnText,
-      saveFunc: () => onConfirm(hideDontShowAgain ? undefined : dontShowAgain.get()),
+      saveFunc: async () => onConfirm(hideDontShowAgain ? undefined : dontShowAgain.get()),
       hideCancel,
       width: width ?? 'normal',
       extraButtons,
@@ -415,8 +416,8 @@ export function confirmModal(
  */
 export function promptModal(
   title: string,
-  onConfirm: (text: string) => Promise<unknown>,
-  btnText: string,
+  onConfirm: (text: string) => Promise<void>,
+  btnText?: string,
   initial?: string,
   placeholder?: string,
   onCancel?: () => void
@@ -428,7 +429,7 @@ export function promptModal(
     const options: ISaveModalOptions = {
       title,
       body: txtInput,
-      saveLabel: btnText,
+      saveLabel: btnText || t('Save'),
       saveFunc: () => {
         // Mark that confirm was invoked.
         confirmed = true;
@@ -617,6 +618,7 @@ export const cssModalTitle = styled('div', `
 export const cssModalBody = styled('div', `
   color: ${theme.text};
   margin: 16px 0;
+  overflow-wrap: break-word;
 `);
 
 export const cssModalButtons = styled('div', `
@@ -670,7 +672,7 @@ const cssModalBacker = styled('div', `
   }
 `);
 
-const cssSpinner = styled('div', `
+export const cssSpinner = styled('div', `
   display: flex;
   align-items: center;
   height: 80px;

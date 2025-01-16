@@ -4,7 +4,7 @@ import {setupTestSuite} from 'test/nbrowser/testUtils';
 
 describe('BehavioralPrompts', function() {
   this.timeout(20000);
-  const cleanup = setupTestSuite();
+  const cleanup = setupTestSuite({tutorial: true});
 
   let session: gu.Session;
   let docId: string;
@@ -37,11 +37,6 @@ describe('BehavioralPrompts', function() {
       await driver.find('.test-fbuilder-type-select').click();
       await assertPromptTitle(null);
     });
-  });
-
-  it('should show an announcement for forms', async function() {
-    await assertPromptTitle('Forms are here!');
-    await gu.dismissBehavioralPrompts();
   });
 
   describe('when anonymous', function() {
@@ -150,30 +145,17 @@ describe('BehavioralPrompts', function() {
     await assertPromptTitle('Editing Card Layout');
   });
 
-  it('should be shown after adding custom view as a new page', async function() {
-    await gu.addNewPage('Custom', 'Table1');
-    await assertPromptTitle('Custom Widgets');
-    await gu.undo();
-  });
-
-  it('should be shown after adding custom section', async function() {
-    await gu.addNewSection('Custom', 'Table1');
-    await assertPromptTitle('Custom Widgets');
-    await gu.undo();
-  });
-
   describe('for the Add New button', function() {
     it('should not be shown if site is empty', async function() {
       session = await gu.session().user('user4').login({showTips: true});
-      await gu.dismissCoachingCall();
-      await driver.navigate().refresh();
-      await gu.loadDocMenu('/');
+      await session.loadDocMenu('/');
       await assertPromptTitle(null);
     });
 
     it('should be shown if site has documents', async function() {
       await session.tempNewDoc(cleanup, 'BehavioralPromptsAddNew');
-      await session.loadDocMenu('/');
+      await driver.find('.test-bc-workspace').click();
+      await gu.waitForDocMenuToLoad();
       await assertPromptTitle('Add New');
     });
 
@@ -183,16 +165,31 @@ describe('BehavioralPrompts', function() {
       await assertPromptTitle(null);
     });
 
-    it('should only be shown once each visit to the doc menu', async function() {
-      // Navigate to another page without reloading; the tip should now be shown.
-      await driver.find('.test-dm-all-docs').click();
-      await gu.waitForDocMenuToLoad();
+    it('should only be shown on the All Documents page if intro is hidden', async function() {
+      await session.loadDocMenu('/');
+      await assertPromptTitle(null);
+      await driver.find('.test-welcome-menu').click();
+      await driver.find('.test-welcome-menu-only-show-documents').click();
+      await gu.waitForServer();
+      await assertPromptTitle(null);
+      await gu.loadDocMenu('/');
+      await assertPromptTitle('Add New');
+    });
+
+    it('should only be shown once on each visit', async function() {
+      // Navigate to the home page for the first time; the tip should be shown.
+      await gu.loadDocMenu('/');
       await assertPromptTitle('Add New');
 
-      // Navigate to another page; the tip should no longer be shown.
+      // Switch to a different page; the tip should no longer be shown.
       await driver.findContent('.test-dm-workspace', /Home/).click();
       await gu.waitForDocMenuToLoad();
       await assertPromptTitle(null);
+
+      // Reload the page; the tip should be shown again.
+      await driver.navigate().refresh();
+      await gu.waitForDocMenuToLoad();
+      await assertPromptTitle('Add New');
     });
   });
 
@@ -231,16 +228,19 @@ describe('BehavioralPrompts', function() {
   });
 
   describe('when in a tutorial', function() {
-    gu.withEnvironmentSnapshot({'GRIST_UI_FEATURES': 'tutorials'});
+    gu.withEnvironmentSnapshot({
+      'GRIST_UI_FEATURES': 'tutorials',
+      'GRIST_TEMPLATE_ORG': 'templates',
+      'GRIST_ONBOARDING_TUTORIAL_DOC_ID': 'grist-basics',
+    });
 
     before(async () => {
       const tutorialSession = await gu.session().user('user3').login({
         showTips: true,
       });
-      const doc = await tutorialSession.tempDoc(cleanup, 'DocTutorial.grist', {load: false});
-      const api = tutorialSession.createHomeApi();
-      await api.updateDoc(doc.id, {type: 'tutorial'});
-      await tutorialSession.loadDoc(`/doc/${doc.id}`);
+      await tutorialSession.loadDocMenu('/');
+      await driver.find('.test-dm-basic-tutorial').click();
+      await gu.waitForDocToLoad();
     });
 
     it('should not be shown', async function() {

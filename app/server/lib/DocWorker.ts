@@ -3,7 +3,7 @@
  * In hosted environment, this comprises the functionality of the DocWorker instance type.
  */
 import {isAffirmative} from 'app/common/gutil';
-import {HomeDBManager} from 'app/gen-server/lib/HomeDBManager';
+import {HomeDBManager} from 'app/gen-server/lib/homedb/HomeDBManager';
 import {ActionHistoryImpl} from 'app/server/lib/ActionHistoryImpl';
 import {assertAccess, getOrSetDocAuth, RequestWithLogin} from 'app/server/lib/Authorizer';
 import {Client} from 'app/server/lib/Client';
@@ -13,7 +13,7 @@ import {filterDocumentInPlace} from 'app/server/lib/filterUtils';
 import {GristServer} from 'app/server/lib/GristServer';
 import {IDocStorageManager} from 'app/server/lib/IDocStorageManager';
 import log from 'app/server/lib/log';
-import {getDocId, integerParam, optStringParam, stringParam} from 'app/server/lib/requestUtils';
+import {getDocId, integerParam, optIntegerParam, optStringParam, stringParam} from 'app/server/lib/requestUtils';
 import {OpenMode, quoteIdent, SQLiteDB} from 'app/server/lib/SQLiteDB';
 import contentDisposition from 'content-disposition';
 import * as express from 'express';
@@ -39,10 +39,11 @@ export class DocWorker {
       const docSession = this._getDocSession(stringParam(req.query.clientId, 'clientId'),
                                              integerParam(req.query.docFD, 'docFD'));
       const activeDoc = docSession.activeDoc;
-      const colId = stringParam(req.query.colId, 'colId');
-      const tableId = stringParam(req.query.tableId, 'tableId');
-      const rowId = integerParam(req.query.rowId, 'rowId');
-      const cell = {colId, tableId, rowId};
+      const colId = optStringParam(req.query.colId, 'colId');
+      const tableId = optStringParam(req.query.tableId, 'tableId');
+      const rowId = optIntegerParam(req.query.rowId, 'rowId');
+      const cell =
+        colId && tableId && rowId ? { colId, tableId, rowId } : undefined;
       const maybeNew = isAffirmative(req.query.maybeNew);
       const attId = integerParam(req.query.attId, 'attId');
       const attRecord = activeDoc.getAttachmentMetadata(attId);
@@ -61,6 +62,7 @@ export class DocWorker {
         .type(ext)
         .set('Content-Disposition', contentDispHeader)
         .set('Cache-Control', 'private, max-age=3600')
+        .set("Content-Security-Policy", "sandbox; default-src: 'none'")
         .send(data);
     } catch (err) {
       res.status(404).send({error: err.toString()});
@@ -118,7 +120,6 @@ export class DocWorker {
       cancelImportFiles:        activeDocMethod.bind(null, 'editors', 'cancelImportFiles'),
       generateImportDiff:       activeDocMethod.bind(null, 'editors', 'generateImportDiff'),
       addAttachments:           activeDocMethod.bind(null, 'editors', 'addAttachments'),
-      removeInstanceFromDoc:    activeDocMethod.bind(null, 'editors', 'removeInstanceFromDoc'),
       startBundleUserActions:   activeDocMethod.bind(null, 'editors', 'startBundleUserActions'),
       stopBundleUserActions:    activeDocMethod.bind(null, 'editors', 'stopBundleUserActions'),
       autocomplete:             activeDocMethod.bind(null, 'viewers', 'autocomplete'),
@@ -132,6 +133,8 @@ export class DocWorker {
       getUsersForViewAs:        activeDocMethod.bind(null, 'viewers', 'getUsersForViewAs'),
       getAccessToken:           activeDocMethod.bind(null, 'viewers', 'getAccessToken'),
       getShare:                 activeDocMethod.bind(null, 'owners', 'getShare'),
+      startTiming:              activeDocMethod.bind(null, 'owners', 'startTiming'),
+      stopTiming:               activeDocMethod.bind(null, 'owners', 'stopTiming'),
     });
   }
 

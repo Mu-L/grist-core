@@ -12,7 +12,7 @@ import {createTestDir, EnvironmentSnapshot, setTmpLogLevel} from 'test/server/te
 import {assert} from 'chai';
 import * as cookie from 'cookie';
 import fetch from 'node-fetch';
-import WebSocket from 'ws';
+import {GristClientSocket} from 'app/client/components/GristClientSocket';
 
 describe('ManyFetches', function() {
   this.timeout(30000);
@@ -27,6 +27,12 @@ describe('ManyFetches', function() {
   let home: TestServer;
   let docs: TestServer;
   let userApi: UserAPIImpl;
+
+  before(function () {
+    if (!process.env.TEST_REDIS_URL) {
+      return this.skip();
+    }
+  });
 
   beforeEach(async function() {
     oldEnv = new EnvironmentSnapshot();   // Needed for prepareDatabase, which changes process.env
@@ -244,7 +250,7 @@ describe('ManyFetches', function() {
     return function createConnectionFunc() {
       let clientId: string = '0';
       return GristWSConnection.create(null, {
-        makeWebSocket(url: string): any  { return new WebSocket(url, undefined, { headers }); },
+        makeWebSocket(url: string)  { return new GristClientSocket(url, { headers }); },
         getTimezone()               { return Promise.resolve('UTC'); },
         getPageUrl()                { return pageUrl; },
         getDocWorkerUrl()           { return Promise.resolve(docWorkerUrl); },

@@ -9,12 +9,13 @@ import {ColumnRec, ViewFieldRec} from 'app/client/models/DocModel';
 import {ChatMessage} from 'app/client/models/entities/ColumnRec';
 import {HAS_FORMULA_ASSISTANT, WHICH_FORMULA_ASSISTANT} from 'app/client/models/features';
 import {getLoginOrSignupUrl, urlState} from 'app/client/models/gristUrlState';
-import {buildHighlightedCode} from 'app/client/ui/CodeHighlight';
+import {buildCodeHighlighter, buildHighlightedCode} from 'app/client/ui/CodeHighlight';
 import {autoGrow} from 'app/client/ui/forms';
 import {sanitizeHTML} from 'app/client/ui/sanitizeHTML';
 import {createUserImage} from 'app/client/ui/UserImage';
 import {basicButton, bigPrimaryButtonLink, primaryButton} from 'app/client/ui2018/buttons';
 import {theme, vars} from 'app/client/ui2018/cssVars';
+import {gristThemeObs} from 'app/client/ui2018/theme';
 import {icon} from 'app/client/ui2018/icons';
 import {cssLink} from 'app/client/ui2018/links';
 import {loadingDots} from 'app/client/ui2018/loaders';
@@ -30,10 +31,11 @@ import {Computed, Disposable, dom, DomElementArg, makeTestId, MutableObsArray,
         obsArray, Observable, styled, subscribeElem} from 'grainjs';
 import debounce from 'lodash/debounce';
 import noop from 'lodash/noop';
-import {marked} from 'marked';
+import {Marked} from 'marked';
+import {markedHighlight} from 'marked-highlight';
 import {v4 as uuidv4} from 'uuid';
 
-const t = makeT('FormulaEditor');
+const t = makeT('FormulaAssistant');
 const testId = makeTestId('test-formula-editor-');
 
 const LOW_CREDITS_WARNING_BANNER_THRESHOLD = 10;
@@ -380,7 +382,7 @@ export class FormulaAssistant extends Disposable {
       canUpgradeSite ? t('upgrade to the Pro Team plan') : t('upgrade your plan'),
       dom.on('click', async () => {
         if (canUpgradeSite) {
-          this._gristDoc.appModel.showUpgradeModal();
+          this._gristDoc.appModel.showUpgradeModal().catch(reportError);
         } else {
           await urlState().pushUrl({billing: 'billing'});
         }
@@ -801,6 +803,7 @@ class ChatHistory extends Disposable {
   public lastSuggestedFormula: Computed<string|null>;
 
   private _element: HTMLElement;
+  private _marked: Marked;
 
   constructor(private _options: {
     column: ColumnRec,
@@ -844,6 +847,17 @@ class ChatHistory extends Disposable {
     this.lastSuggestedFormula = Computed.create(this, use => {
       return [...use(this.conversationHistory)].reverse().find(({formula}) => formula)?.formula ?? null;
     });
+
+    const highlightCodePromise = buildCodeHighlighter({maxLines: 60});
+    this._marked = new Marked(
+      markedHighlight({
+        async: true,
+        highlight: async (code) => {
+          const highlightCode = await highlightCodePromise;
+          return highlightCode(code);
+        },
+      })
+    );
   }
 
   public thinking(on = true) {
@@ -861,10 +875,6 @@ class ChatHistory extends Disposable {
       });
       this.scrollDown();
     }
-  }
-
-  public supportsMarkdown() {
-    return this._options.column.chatHistory.peek().get().state !== undefined;
   }
 
   public addResponse(message: ChatMessage) {
@@ -957,6 +967,10 @@ class ChatHistory extends Disposable {
     );
   }
 
+  private _supportsMarkdown() {
+    return this._options.column.chatHistory.peek().get().state !== undefined;
+  }
+
   private _buildIntroMessage() {
     return cssAiIntroMessage(
       cssAvatar(cssAiImage()),
@@ -1009,26 +1023,15 @@ class ChatHistory extends Disposable {
    * Renders the message as markdown if possible, otherwise as a code block.
    */
   private _render(message: string, ...args: DomElementArg[]) {
-    const doc = this._options.gristDoc;
-    if (this.supportsMarkdown()) {
+    if (this._supportsMarkdown()) {
       return dom('div',
-        (el) => subscribeElem(el, doc.currentTheme, () => {
-          const content = sanitizeHTML(marked(message, {
-            highlight: (code) => {
-              const codeBlock = buildHighlightedCode(code, {
-                gristTheme: doc.currentTheme,
-                maxLines: 60,
-              });
-              return codeBlock.innerHTML;
-            },
-          }));
-          el.innerHTML = content;
+        (el) => subscribeElem(el, gristThemeObs(), async () => {
+          el.innerHTML = sanitizeHTML(await this._marked.parse(message));
         }),
         ...args
       );
     } else {
-      return buildHighlightedCode(message, {
-        gristTheme: doc.currentTheme,
+      return dom.create(buildHighlightedCode, message, {
         maxLines: 100,
       });
     }

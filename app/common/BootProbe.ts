@@ -1,17 +1,25 @@
+import { SandboxInfo } from 'app/common/SandboxInfo';
 
 export type BootProbeIds =
     'boot-page' |
     'health-check' |
     'reachable' |
     'host-header' |
-    'system-user'
+    'sandboxing' |
+    'system-user' |
+    'authentication' |
+    'websockets' |
+    'session-secret'
 ;
 
 export interface BootProbeResult {
   verdict?: string;
-  success?: boolean;
-  done?: boolean;
-  severity?: 'fault' | 'warning' | 'hmm';
+  // Result of check.
+  // "success" is a positive outcome.
+  // "none" means no fault detected (but that the test is not exhaustive
+  // enough to claim "success").
+  // "fault" is a bad error, "warning" a ... warning, "hmm" almost a debug message.
+  status: 'success' | 'fault' | 'warning' | 'hmm' | 'none';
   details?: Record<string, any>;
 }
 
@@ -20,3 +28,4 @@ export interface BootProbeInfo {
   name: string;
 }
 
+export type SandboxingBootProbeDetails = SandboxInfo;

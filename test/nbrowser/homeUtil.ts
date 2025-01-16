@@ -9,10 +9,11 @@ import fetch from 'node-fetch';
 import {authenticator} from 'otplib';
 import * as path from 'path';
 
+import {normalizeEmail} from 'app/common/emails';
 import {UserProfile} from 'app/common/LoginSessionAPI';
 import {BehavioralPrompt, UserPrefs, WelcomePopup} from 'app/common/Prefs';
 import {DocWorkerAPI, UserAPI, UserAPIImpl} from 'app/common/UserAPI';
-import {HomeDBManager} from 'app/gen-server/lib/HomeDBManager';
+import {HomeDBManager} from 'app/gen-server/lib/homedb/HomeDBManager';
 import {TestingHooksClient} from 'app/server/lib/TestingHooks';
 import EventEmitter = require('events');
 
@@ -105,7 +106,11 @@ export class HomeUtil {
       const testingHooks = await this.server.getTestingHooks();
       const sid = await this.getGristSid();
       if (!sid) { throw new Error('no session available'); }
-      await testingHooks.setLoginSessionProfile(sid, {name, email, loginMethod}, org);
+      await testingHooks.setLoginSessionProfile(
+        sid,
+        {name, email, loginEmail: normalizeEmail(email), loginMethod},
+        org
+      );
     } else {
       if (loginMethod && loginMethod !== 'Email + Password') {
         throw new Error('only Email + Password logins supported for external server tests');
@@ -376,7 +381,7 @@ export class HomeUtil {
   /**
    * Waits for browser to navigate to a Grist login page.
    */
-   public async checkGristLoginPage(waitMs: number = 2000) {
+  public async checkGristLoginPage(waitMs: number = 2000) {
     await this.driver.wait(this.isOnGristLoginPage.bind(this), waitMs);
   }
 
@@ -415,7 +420,7 @@ export class HomeUtil {
     if (this.server.isExternalServer()) { throw new Error('not supported'); }
     const dbManager = await this.server.getDatabase();
     const user = await dbManager.getUserByLogin(email);
-    if (user) { await dbManager.deleteUser({userId: user.id}, user.id, user.name); }
+    await dbManager.deleteUser({userId: user.id}, user.id, user.name);
   }
 
   // Set whether this is the user's first time logging in.  Requires access to the database.
@@ -423,10 +428,8 @@ export class HomeUtil {
     if (this.server.isExternalServer()) { throw new Error('not supported'); }
     const dbManager = await this.server.getDatabase();
     const user = await dbManager.getUserByLogin(email);
-    if (user) {
-      user.isFirstTimeUser = isFirstLogin;
-      await user.save();
-    }
+    user.isFirstTimeUser = isFirstLogin;
+    await user.save();
   }
 
   private async _initShowGristTour(email: string, showGristTour: boolean) {
@@ -458,7 +461,6 @@ export class HomeUtil {
 
     const dbManager = await this.server.getDatabase();
     const user = await dbManager.getUserByLogin(email);
-    if (!user) { return; }
 
     if (user.personalOrg) {
       const org = await dbManager.getOrg({userId: user.id}, user.personalOrg.id);

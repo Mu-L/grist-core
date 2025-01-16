@@ -6,16 +6,10 @@
  *  https://css-tricks.com/snippets/css/system-font-stack/
  *
  */
-import {createPausableObs, PausableObservable} from 'app/client/lib/pausableObs';
-import {getStorage} from 'app/client/lib/storage';
 import {urlState} from 'app/client/models/gristUrlState';
 import {getTheme, ProductFlavor} from 'app/client/ui/CustomThemes';
-import {Theme, ThemeAppearance} from 'app/common/ThemePrefs';
-import {getThemeColors} from 'app/common/Themes';
-import {getGristConfig} from 'app/common/urlUtils';
-import {Computed, dom, DomElementMethod, makeTestId, Observable, styled, TestId} from 'grainjs';
+import {dom, DomElementMethod, makeTestId, Observable, styled, TestId} from 'grainjs';
 import debounce = require('lodash/debounce');
-import isEqual = require('lodash/isEqual');
 import values = require('lodash/values');
 
 const VAR_PREFIX = 'grist';
@@ -117,7 +111,7 @@ export const vars = {
   labelTextBg:    new CustomProp('label-text-bg', '#FFFFFF'),
   labelActiveBg:  new CustomProp('label-active-bg', '#F0F0F0'),
 
-  controlMargin:  new CustomProp('normal-margin', '2px'),
+  controlMargin:  new CustomProp('normal-margin',  '2px'),
   controlPadding: new CustomProp('normal-padding', '3px 5px'),
   tightPadding:   new CustomProp('tight-padding',  '1px 2px'),
   loosePadding:   new CustomProp('loose-padding',  '5px 15px'),
@@ -271,6 +265,7 @@ export const theme = {
 
   /* Popups */
   popupBg: new CustomProp('theme-popup-bg', undefined, 'white'),
+  popupSecondaryBg: new CustomProp('theme-popup-secondary-bg', undefined, colors.lightGrey),
   popupInnerShadow: new CustomProp('theme-popup-shadow-inner', undefined,
     'rgba(31, 37, 50, 0.31)'),
   popupOuterShadow: new CustomProp('theme-popup-shadow-outer', undefined,
@@ -441,16 +436,19 @@ export const theme = {
     colors.darkGrey),
 
   /* Right Panel */
-  rightPanelTabFg: new CustomProp('theme-right-panel-tab-fg', undefined, colors.dark),
-  rightPanelTabBg: new CustomProp('theme-right-panel-tab-bg', undefined, colors.lightGrey),
+  rightPanelTabFg: new CustomProp('theme-right-panel-tab-fg', undefined, colors.slate),
+  rightPanelTabBg: new CustomProp('theme-right-panel-tab-bg', undefined, colors.light),
   rightPanelTabIcon: new CustomProp('theme-right-panel-tab-icon', undefined, colors.slate),
   rightPanelTabIconHover: new CustomProp('theme-right-panel-tab-icon-hover', undefined,
-    colors.lightGreen),
-  rightPanelTabHoverBg: new CustomProp('theme-right-panel-tab-hover-bg', undefined,
-    colors.mediumGrey),
+    colors.dark),
+  rightPanelTabBorder: new CustomProp('theme-right-panel-tab-border', undefined, colors.mediumGrey),
+  rightPanelTabHoverBg: new CustomProp('theme-right-panel-tab-hover-bg', undefined, colors.light),
+  rightPanelTabHoverFg: new CustomProp('theme-right-panel-tab-hover-fg', undefined, colors.dark),
   rightPanelTabSelectedFg: new CustomProp('theme-right-panel-tab-selected-fg', undefined,
-    colors.light),
+    colors.dark),
   rightPanelTabSelectedBg: new CustomProp('theme-right-panel-tab-selected-bg', undefined,
+    colors.lightGrey),
+  rightPanelTabSelectedIcon: new CustomProp('theme-right-panel-tab-selected-icon', undefined,
     colors.lightGreen),
   rightPanelTabButtonHoverBg: new CustomProp('theme-right-panel-tab-button-hover-bg',
     undefined, colors.darkGreen),
@@ -477,6 +475,10 @@ export const theme = {
     undefined, colors.mediumGreyOpaque),
   rightPanelFieldSettingsButtonBg: new CustomProp('theme-right-panel-field-settings-button-bg',
     undefined, 'lightgrey'),
+  rightPanelCustomWidgetButtonFg: new CustomProp('theme-right-panel-custom-widget-button-fg',
+    undefined, colors.dark),
+  rightPanelCustomWidgetButtonBg: new CustomProp('theme-right-panel-custom-widget-button-bg',
+    undefined, colors.darkGrey),
 
   /* Document History */
   documentHistorySnapshotFg: new CustomProp('theme-document-history-snapshot-fg', undefined,
@@ -498,7 +500,7 @@ export const theme = {
   documentHistoryTableBorder: new CustomProp('theme-document-history-table-border',
     undefined, 'lightgray'),
   documentHistoryTableBorderLight: new CustomProp('theme-document-history-table-border-light',
-    undefined, '#D9D9D9'),
+    undefined, colors.darkGrey),
 
   /* Accents */
   accentIcon: new CustomProp('theme-accent-icon', undefined, colors.lightGreen),
@@ -555,7 +557,7 @@ export const theme = {
   menuItemFg: new CustomProp('theme-menu-item-fg', undefined, 'black'),
   menuItemSelectedFg: new CustomProp('theme-menu-item-selected-fg', undefined, colors.light),
   menuItemSelectedBg: new CustomProp('theme-menu-item-selected-bg', undefined, vars.primaryBg),
-  menuItemDisabledFg: new CustomProp('theme-menu-item-disabled-fg', undefined, '#D9D9D9'),
+  menuItemDisabledFg: new CustomProp('theme-menu-item-disabled-fg', undefined, colors.darkGrey),
   menuItemIconFg: new CustomProp('theme-menu-item-icon-fg', undefined, colors.slate),
   menuItemIconSelectedFg: new CustomProp('theme-menu-item-icon-selected-fg', undefined, 'white'),
 
@@ -805,7 +807,7 @@ export const theme = {
   colorSelectFontOptionBgSelected: new CustomProp('theme-color-select-font-option-bg-selected',
     undefined, colors.dark),
   colorSelectColorSquareBorder: new CustomProp('theme-color-select-color-square-border',
-    undefined, '#D9D9D9'),
+    undefined, colors.darkGrey),
   colorSelectColorSquareBorderEmpty: new CustomProp('theme-color-select-color-square-border-empty',
     undefined, colors.dark),
   colorSelectInputFg: new CustomProp('theme-color-select-input-fg',
@@ -866,13 +868,13 @@ export const theme = {
   attachmentsCellIconFg: new CustomProp(
     'theme-attachments-cell-icon-fg', undefined, 'white'),
   attachmentsCellIconBg: new CustomProp(
-    'theme-attachments-cell-icon-bg', undefined, '#D9D9D9'),
+    'theme-attachments-cell-icon-bg', undefined, colors.darkGrey),
   attachmentsCellIconHoverBg: new CustomProp(
     'theme-attachments-cell-icon-hover-bg', undefined, '#929299'),
 
   /* Announcement Popups */
   announcementPopupFg: new CustomProp('theme-announcement-popup-fg', undefined, '#000000'),
-  announcementPopupBg: new CustomProp('theme-announcement-popup-bg', undefined, '#DCF4EB'),
+  announcementPopupBg: new CustomProp('theme-announcement-popup-bg', undefined, colors.selectionOpaque),
 
   /* Switches */
   switchSliderFg: new CustomProp('theme-switch-slider-fg', undefined, '#ccc'),
@@ -883,6 +885,38 @@ export const theme = {
 
   /* Numeric Spinners */
   numericSpinnerFg: new CustomProp('theme-numeric-spinner-fg', undefined, '#606060'),
+
+  /* Custom Widget Gallery */
+  widgetGalleryBorder: new CustomProp('theme-widget-gallery-border', undefined, colors.darkGrey),
+  widgetGalleryBorderSelected: new CustomProp('theme-widget-gallery-border-selected', undefined,
+    colors.lightGreen),
+  widgetGalleryShadow: new CustomProp('theme-widget-gallery-shadow', undefined, '#0000001A'),
+  widgetGalleryBgHover: new CustomProp('theme-widget-gallery-bg-hover', undefined,
+    colors.lightGrey),
+  widgetGallerySecondaryHeaderFg: new CustomProp('theme-widget-gallery-secondary-header-fg',
+    undefined, colors.light),
+  widgetGallerySecondaryHeaderBg: new CustomProp('theme-widget-gallery-secondary-header-bg',
+    undefined, colors.slate),
+  widgetGallerySecondaryHeaderBgHover: new CustomProp(
+    'theme-widget-gallery-secondary-header-bg-hover', undefined, '#7E7E85'),
+
+  /* Markdown Cell */
+  markdownCellLightBg: new CustomProp('theme-markdown-cell-light-bg', undefined, colors.lightGrey),
+  markdownCellLightBorder: new CustomProp('theme-markdown-cell-light-border', undefined,
+    colors.mediumGreyOpaque),
+  markdownCellMediumBorder: new CustomProp('theme-markdown-cell-medium-border', undefined,
+    colors.darkGrey),
+
+  /* App Header */
+  appHeaderBg: new CustomProp('theme-app-header-bg', undefined, colors.light),
+  appHeaderBorder: new CustomProp('theme-app-header-border', undefined, colors.mediumGreyOpaque),
+  appHeaderBorderHover: new CustomProp('theme-app-header-border-hover', undefined, colors.slate),
+
+  /* Card Button */
+  cardButtonBorder: new CustomProp('theme-card-button-border', undefined, colors.darkGrey),
+  cardButtonBorderSelected: new CustomProp('theme-card-button-border-selected', undefined,
+    colors.lightGreen),
+  cardButtonShadow: new CustomProp('theme-card-button-shadow', undefined, "#0000001A"),
 };
 
 const cssColors = values(colors).map(v => v.decl()).join('\n');
@@ -983,6 +1017,22 @@ export function isNarrowScreenObs(): Observable<boolean> {
   return _isNarrowScreenObs;
 }
 
+export function isXSmallScreen() {
+  return window.innerWidth < smallScreenWidth;
+}
+
+let _isXSmallScreenObs: Observable<boolean>|undefined;
+
+// Returns a singleton observable for whether the screen is an extra small one.
+export function isXSmallScreenObs(): Observable<boolean> {
+  if (!_isXSmallScreenObs) {
+    const obs = Observable.create<boolean>(null, isXSmallScreen());
+    window.addEventListener('resize', () => obs.set(isXSmallScreen()));
+    _isXSmallScreenObs = obs;
+  }
+  return _isXSmallScreenObs;
+}
+
 export const cssHideForNarrowScreen = styled('div', `
   @media ${mediaSmall} {
     & {
@@ -1005,51 +1055,6 @@ export function isScreenResizing(): Observable<boolean> {
   return _isScreenResizingObs;
 }
 
-export function prefersDarkMode(): boolean {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches;
-}
-
-let _prefersDarkModeObs: PausableObservable<boolean>|undefined;
-
-/**
- * Returns a singleton observable for whether the user agent prefers dark mode.
- */
-export function prefersDarkModeObs(): PausableObservable<boolean> {
-  if (!_prefersDarkModeObs) {
-    const query = window.matchMedia('(prefers-color-scheme: dark)');
-    const obs = createPausableObs<boolean>(null, query.matches);
-    query.addEventListener('change', event => obs.set(event.matches));
-    _prefersDarkModeObs = obs;
-  }
-  return _prefersDarkModeObs;
-}
-
-let _prefersColorSchemeThemeObs: Computed<Theme>|undefined;
-
-/**
- * Returns a singleton observable for the Grist theme matching the current
- * user agent color scheme preference ("light" or "dark").
- */
-export function prefersColorSchemeThemeObs(): Computed<Theme> {
-  if (!_prefersColorSchemeThemeObs) {
-    const obs = Computed.create(null, prefersDarkModeObs(), (_use, prefersDarkTheme) => {
-      if (prefersDarkTheme) {
-        return {
-          appearance: 'dark',
-          colors: getThemeColors('GristDark'),
-        } as const;
-      } else {
-        return {
-          appearance: 'light',
-          colors: getThemeColors('GristLight'),
-        } as const;
-      }
-    });
-    _prefersColorSchemeThemeObs = obs;
-  }
-  return _prefersColorSchemeThemeObs;
-}
-
 /**
  * Attaches the global css properties to the document's root to make them available in the page.
  */
@@ -1063,96 +1068,6 @@ export function attachCssRootVars(productFlavor: ProductFlavor, varsOnly: boolea
   }
   const interfaceStyle = urlState().state.get().params?.style || 'full';
   document.body.classList.add(`interface-${interfaceStyle}`);
-}
-
-export function attachTheme(themeObs: Observable<Theme>) {
-  // Attach the current theme to the DOM.
-  attachCssThemeVars(themeObs.get());
-
-  // Whenever the theme changes, re-attach it to the DOM.
-  return themeObs.addListener((newTheme, oldTheme) => {
-    if (isEqual(newTheme, oldTheme)) { return; }
-
-    attachCssThemeVars(newTheme);
-  });
-}
-
-/**
- * Attaches theme-related css properties to the theme style element.
- */
-function attachCssThemeVars({appearance, colors: themeColors}: Theme) {
-  // Custom CSS is incompatible with custom themes.
-  if (getGristConfig().enableCustomCss) { return; }
-
-  // Prepare the custom properties needed for applying the theme.
-  const properties = Object.entries(themeColors)
-    .map(([name, value]) => `--grist-theme-${name}: ${value};`);
-
-  // Include properties for styling the scrollbar.
-  properties.push(...getCssScrollbarProperties(appearance));
-
-  // Include properties for picking an appropriate background image.
-  properties.push(...getCssThemeBackgroundProperties(appearance));
-
-  // Apply the properties to the theme style element.
-  getOrCreateStyleElement('grist-theme').textContent = `:root {
-${properties.join('\n')}
-  }`;
-
-  // Make the browser aware of the color scheme.
-  document.documentElement.style.setProperty(`color-scheme`, appearance);
-
-  // Cache the appearance in local storage; this is currently used to apply a suitable
-  // background image that's shown while the application is loading.
-  getStorage().setItem('appearance', appearance);
-}
-
-/**
- * Gets scrollbar-related css properties that are appropriate for the given `appearance`.
- *
- * Note: Browser support for customizing scrollbars is still a mixed bag; the bulk of customization
- * is non-standard and unsupported by Firefox. If support matures, we could expose some of these in
- * custom themes, but for now we'll just go with reasonable presets.
- */
-function getCssScrollbarProperties(appearance: ThemeAppearance) {
-  return [
-    '--scroll-bar-fg: ' +
-      (appearance === 'dark' ? '#6B6B6B;' : '#A8A8A8;'),
-    '--scroll-bar-hover-fg: ' +
-      (appearance === 'dark' ? '#7B7B7B;' : '#8F8F8F;'),
-    '--scroll-bar-active-fg: ' +
-      (appearance === 'dark' ? '#8B8B8B;' : '#7C7C7C;'),
-    '--scroll-bar-bg: ' +
-      (appearance === 'dark' ? '#2B2B2B;' : '#F0F0F0;'),
-  ];
-}
-
-/**
- * Gets background-related css properties that are appropriate for the given `appearance`.
- *
- * Currently, this sets a property for showing a background image that's visible while a page
- * is loading.
- */
-function getCssThemeBackgroundProperties(appearance: ThemeAppearance) {
-  const value = appearance === 'dark'
-    ? 'url("img/prismpattern.png")'
-    : 'url("img/gplaypattern.png")';
-  return [`--grist-theme-bg: ${value};`];
-}
-
-/**
- * Gets or creates a style element in the head of the document with the given `id`.
- *
- * Useful for grouping CSS values such as theme custom properties without needing to
- * pollute the document with in-line styles.
- */
-function getOrCreateStyleElement(id: string) {
-  let style = document.head.querySelector(`#${id}`);
-  if (style) { return style; }
-  style = document.createElement('style');
-  style.setAttribute('id', id);
-  document.head.append(style);
-  return style;
 }
 
 // A dom method to hide element in print view

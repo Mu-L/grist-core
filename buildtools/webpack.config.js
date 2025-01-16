@@ -14,7 +14,6 @@ module.exports = {
     main: "app/client/app",
     errorPages: "app/client/errorMain",
     apiconsole: "app/client/apiconsole",
-    boot: "app/client/boot",
     billing: "app/client/billingMain",
     form: "app/client/formMain",
     // Include client test harness if it is present (it won't be in
@@ -56,6 +55,7 @@ module.exports = {
     ],
     fallback: {
       'path': require.resolve("path-browserify"),
+      'process': require.resolve("process/browser"),
     },
   },
   module: {
@@ -73,13 +73,17 @@ module.exports = {
       { test: /\.js$/,
         use: ["source-map-loader"],
         enforce: "pre"
+      },
+      {
+        test: /\.css$/,
+        type: 'asset/resource'
       }
     ]
   },
   plugins: [
     // Some modules assume presence of Buffer and process.
     new ProvidePlugin({
-      process: 'process/browser',
+      process: 'process',
       Buffer: ['buffer', 'Buffer']
     }),
     // To strip all locales except “en”

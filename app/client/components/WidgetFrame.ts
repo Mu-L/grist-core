@@ -5,13 +5,14 @@ import {GristDoc} from 'app/client/components/GristDoc';
 import {hooks} from 'app/client/Hooks';
 import {get as getBrowserGlobals} from 'app/client/lib/browserGlobals';
 import {makeTestId} from 'app/client/lib/domUtils';
+import {sanitizeHttpUrl} from 'app/client/lib/sanitizeUrl';
 import {ColumnRec, ViewSectionRec} from 'app/client/models/DocModel';
 import {reportError} from 'app/client/models/errors';
+import {gristThemeObs} from 'app/client/ui2018/theme';
 import {AccessLevel, ICustomWidget, isSatisfied, matchWidget} from 'app/common/CustomWidget';
 import {DisposableWithEvents} from 'app/common/DisposableWithEvents';
 import {BulkColValues, fromTableDataAction, RowRecord} from 'app/common/DocActions';
 import {extractInfoFromColType, reencodeAsAny} from 'app/common/gristTypes';
-import {Theme} from 'app/common/ThemePrefs';
 import {getGristConfig} from 'app/common/urlUtils';
 import {
   AccessTokenOptions, CursorPos, CustomSectionAPI, FetchSelectedOptions, GristDocAPI, GristView,
@@ -141,7 +142,10 @@ export class WidgetFrame extends DisposableWithEvents {
     const maybeUrl = Computed.create(this, use => use(this._widget)?.url || this._options.url);
 
     // Url to widget or empty page with access level and preferences.
-    this._url = Computed.create(this, use => this._urlWithAccess(use(maybeUrl) || this._getEmptyWidgetPage()));
+    this._url = Computed.create(
+      this,
+      (use) => this._urlWithAccess(use(maybeUrl)) || this._getEmptyWidgetPage()
+    );
 
     // Iframe is empty when url is not set.
     this._isEmpty = Computed.create(this, use => !use(maybeUrl));
@@ -222,17 +226,24 @@ export class WidgetFrame extends DisposableWithEvents {
   }
 
   // Appends access level to query string.
-  private _urlWithAccess(url: string) {
+  private _urlWithAccess(url: string | null): string | null {
     if (!url) {
       return url;
     }
-    const urlObj = new URL(url);
+
+    let urlObj: URL;
+    try {
+      urlObj = new URL(url);
+    } catch (e) {
+      console.error(e);
+      return null;
+    }
     urlObj.searchParams.append('access', this._options.access);
     urlObj.searchParams.append('readonly', String(this._options.readonly));
     // Append user and document preferences to query string.
     const settingsParams = new URLSearchParams(this._options.preferences);
     settingsParams.forEach((value, key) => urlObj.searchParams.append(key, value));
-    return urlObj.href;
+    return sanitizeHttpUrl(urlObj.href);
   }
 
   private _getEmptyWidgetPage(): string {
@@ -696,10 +707,10 @@ export class ConfigNotifier extends BaseEventSource {
  * Notifies about theme changes. Exposed in the API as `onThemeChange`.
  */
 export class ThemeNotifier extends BaseEventSource {
-  constructor(private _theme: Computed<Theme>) {
+  constructor() {
     super();
     this.autoDispose(
-      this._theme.addListener((newTheme, oldTheme) => {
+      gristThemeObs().addListener((newTheme, oldTheme) => {
         if (isEqual(newTheme, oldTheme)) { return; }
 
         this._update();
@@ -715,7 +726,7 @@ export class ThemeNotifier extends BaseEventSource {
     if (this.isDisposed()) { return; }
 
     this._notify({
-      theme: this._theme.get(),
+      theme: gristThemeObs().get(),
       fromReady,
     });
   }

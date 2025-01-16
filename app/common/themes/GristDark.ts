@@ -85,6 +85,7 @@ export const GristDark: ThemeColors = {
 
   /* Popups */
   'popup-bg': '#32323F',
+  'popup-secondary-bg': '#262633',
   'popup-shadow-inner': '#000000',
   'popup-shadow-outer': '#000000',
   'popup-close-button-fg': '#A4A4B1',
@@ -228,13 +229,16 @@ export const GristDark: ThemeColors = {
   'left-panel-page-emoji-outline': '#70707D',
 
   /* Right Panel */
-  'right-panel-tab-fg': '#EFEFEF',
-  'right-panel-tab-bg': '#262633',
+  'right-panel-tab-fg': '#A4A4B1',
+  'right-panel-tab-bg': '#32323f',
   'right-panel-tab-icon': '#A4A4B1',
-  'right-panel-tab-icon-hover': '#13D78D',
-  'right-panel-tab-hover-bg': 'rgba(111,111,117,0.6)',
-  'right-panel-tab-selected-fg': '#FFFFFF',
-  'right-panel-tab-selected-bg': '#157A54',
+  'right-panel-tab-icon-hover': '#EFEFEF',
+  'right-panel-tab-border': '#60606D',
+  'right-panel-tab-hover-bg': '#32323f',
+  'right-panel-tab-hover-fg': '#EFEFEF',
+  'right-panel-tab-selected-fg': '#EFEFEF',
+  'right-panel-tab-selected-bg': '#262633',
+  'right-panel-tab-selected-icon': '#16B378',
   'right-panel-tab-button-hover-bg': '#0A5438',
   'right-panel-subtab-fg': '#17B378',
   'right-panel-subtab-selected-fg': '#EFEFEF',
@@ -248,6 +252,8 @@ export const GristDark: ThemeColors = {
   'right-panel-toggle-button-disabled-bg': '#32323F',
   'right-panel-field-settings-bg': '#404150',
   'right-panel-field-settings-button-bg': '#646473',
+  'right-panel-custom-widget-button-fg': '#EFEFEF',
+  'right-panel-custom-widget-button-bg': '#60606D',
 
   /* Document History */
   'document-history-snapshot-fg': '#EFEFEF',
@@ -551,4 +557,28 @@ export const GristDark: ThemeColors = {
 
   /* Numeric Spinners */
   'numeric-spinner-fg': '#A4A4B1',
+
+  /* Custom Widget Gallery */
+  'widget-gallery-border': '#555563',
+  'widget-gallery-border-selected': '#17B378',
+  'widget-gallery-shadow': '#00000080',
+  'widget-gallery-bg-hover': '#262633',
+  'widget-gallery-secondary-header-fg': '#FFFFFF',
+  'widget-gallery-secondary-header-bg': '#70707D',
+  'widget-gallery-secondary-header-bg-hover': '#60606D',
+
+  /* Markdown Cell */
+  'markdown-cell-light-bg': '#494958',
+  'markdown-cell-light-border': '#32323F',
+  'markdown-cell-medium-border': '#555563',
+
+  /* App Header */
+  'app-header-bg': '#32323F',
+  'app-header-border': '#32323f',
+  'app-header-border-hover': '#78788c',
+
+  /* Card Button */
+  'card-button-border': '#555563',
+  'card-button-border-selected': '#17B378',
+  'card-button-shadow': '#0000001A',
 };

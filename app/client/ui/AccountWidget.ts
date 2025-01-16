@@ -1,13 +1,20 @@
 import {AppModel} from 'app/client/models/AppModel';
 import {DocPageModel} from 'app/client/models/DocPageModel';
 import {getLoginOrSignupUrl, getLoginUrl, getLogoutUrl, getSignupUrl, urlState} from 'app/client/models/gristUrlState';
+import {getAdminPanelName} from 'app/client/ui/AdminPanelName';
 import {manageTeamUsers} from 'app/client/ui/OpenUserManager';
 import {createUserImage} from 'app/client/ui/UserImage';
 import * as viewport from 'app/client/ui/viewport';
 import {bigPrimaryButtonLink, primaryButtonLink} from 'app/client/ui2018/buttons';
 import {mediaDeviceNotSmall, testId, theme, vars} from 'app/client/ui2018/cssVars';
 import {icon} from 'app/client/ui2018/icons';
-import {menu, menuDivider, menuItem, menuItemLink, menuSubHeader} from 'app/client/ui2018/menus';
+import {
+  menu,
+  menuDivider,
+  menuItem,
+  menuItemLink,
+  menuSubHeader,
+} from 'app/client/ui2018/menus';
 import {commonUrls, isFeatureEnabled} from 'app/common/gristUrls';
 import {FullUser} from 'app/common/LoginSessionAPI';
 import * as roles from 'app/common/roles';
@@ -138,7 +145,7 @@ export class AccountWidget extends Disposable {
 
       // Show 'Organization Settings' when on a home page of a valid org.
       (!this._docPageModel && currentOrg && this._appModel.isTeamSite ?
-        menuItem(() => manageTeamUsers(currentOrg, user, this._appModel.api),
+        menuItem(() => manageTeamUsers({org: currentOrg, user, api: this._appModel.api}),
                  roles.canEditAccess(currentOrg.access) ? t("Manage Team") : t("Access Details"),
                  testId('dm-org-access')) :
         // Don't show on doc pages, or for personal orgs.
@@ -146,7 +153,11 @@ export class AccountWidget extends Disposable {
 
       this._maybeBuildBillingPageMenuItem(),
       this._maybeBuildActivationPageMenuItem(),
-      this._maybeBuildSupportGristPageMenuItem(),
+      this._maybeBuildAdminPanelMenuItem(),
+      this._maybeBuildSupportGristButton(),
+
+      // TODO: Uncomment when team audit logs are ready to use.
+      // this._maybeBuildAuditLogsMenuItem(),
 
       mobileModeToggle,
 
@@ -195,13 +206,17 @@ export class AccountWidget extends Disposable {
     if (deploymentType !== 'saas') { return null; }
 
     const {currentValidUser, currentOrg, isTeamSite} = this._appModel;
-    const isBillingManager = Boolean(currentOrg && currentOrg.billingAccount &&
-      (currentOrg.billingAccount.isManager || currentValidUser?.isSupport));
+    const canViewBillingPage = Boolean(
+      currentOrg && // have accecc to org
+      currentOrg.billingAccount && // have access to billing account
+      (currentOrg.billingAccount.isManager // is billing manager
+       || currentValidUser?.isSupport // or support
+       || this._appModel.isInstallAdmin())); // or install admin
 
     return isTeamSite ?
       // For links, disabling with just a class is hard; easier to just not make it a link.
       // TODO weasel menus should support disabling menuItemLink.
-      (isBillingManager ?
+      (canViewBillingPage ?
         menuItemLink(urlState().setLinkUrl({billing: 'billing'}), t('Billing Account')) :
         menuItem(() => null, t('Billing Account'), dom.cls('disabled', true))
       ) :
@@ -209,27 +224,54 @@ export class AccountWidget extends Disposable {
   }
 
   private _maybeBuildActivationPageMenuItem() {
-    const {activation, deploymentType} = getGristConfig();
-    if (deploymentType !== 'enterprise' || !activation?.isManager) {
+    const {deploymentType} = getGristConfig();
+    if (deploymentType !== 'enterprise' || !this._appModel.isInstallAdmin()) {
       return null;
     }
 
     return menuItemLink(t('Activation'), urlState().setLinkUrl({activation: 'activation'}));
   }
 
-  private _maybeBuildSupportGristPageMenuItem() {
-    const {deploymentType} = getGristConfig();
-    if (deploymentType !== 'core') {
-      return null;
+  private _maybeBuildAdminPanelMenuItem() {
+    // Only show Admin Panel item to the installation admins.
+    if (this._appModel.currentUser?.isInstallAdmin) {
+      return menuItemLink(
+        getAdminPanelName(),
+        urlState().setLinkUrl({adminPanel: 'admin'}),
+        testId('usermenu-admin-panel'),
+      );
     }
-
-    return menuItemLink(
-      t('Support Grist'),
-      cssHeartIcon('💛'),
-      urlState().setLinkUrl({supportGrist: 'support'}),
-      testId('usermenu-support-grist'),
-    );
   }
+
+  private _maybeBuildSupportGristButton() {
+    const {deploymentType} = getGristConfig();
+    const isEnabled = (deploymentType === 'core') && isFeatureEnabled("supportGrist");
+    if (isEnabled) {
+      return menuItemLink(t('Support Grist'), ' 💛',
+        {href: commonUrls.githubSponsorGristLabs, target: '_blank'},
+        testId('usermenu-support-grist'),
+      );
+    }
+  }
+
+  // TODO: Uncomment when team audit logs are ready to use.
+  // private _maybeBuildAuditLogsMenuItem() {
+  //   const { deploymentType } = getGristConfig();
+  //   if (
+  //     !this._appModel.isOwner() ||
+  //     !this._appModel.isTeamSite ||
+  //     !deploymentType ||
+  //     !["saas", "core", "enterprise"].includes(deploymentType)
+  //   ) {
+  //     return null;
+  //   }
+
+  //   return menuItemLink(
+  //     t("Audit Logs"),
+  //     menuAnnotate(t("New")),
+  //     urlState().setLinkUrl({ auditLogs: "audit-logs" })
+  //   );
+  // }
 }
 
 const cssAccountWidget = styled('div', `
@@ -243,10 +285,6 @@ export const cssUserIcon = styled('div', `
   width: 48px;
   padding: 8px;
   cursor: pointer;
-`);
-
-const cssHeartIcon = styled('span', `
-  margin-left: 8px;
 `);
 
 const cssUserInfo = styled('div', `

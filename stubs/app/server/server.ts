@@ -6,8 +6,7 @@
 
 import {commonUrls} from 'app/common/gristUrls';
 import {isAffirmative} from 'app/common/gutil';
-import {HomeDBManager} from 'app/gen-server/lib/HomeDBManager';
-import {TEAM_FREE_PLAN} from 'app/common/Features';
+import {HomeDBManager} from 'app/gen-server/lib/homedb/HomeDBManager';
 
 const debugging = isAffirmative(process.env.DEBUG) || isAffirmative(process.env.VERBOSE);
 
@@ -15,7 +14,6 @@ const debugging = isAffirmative(process.env.DEBUG) || isAffirmative(process.env.
 if (!debugging) {
   // Be a lot less noisy by default.
   setDefaultEnv('GRIST_LOG_LEVEL', 'error');
-  setDefaultEnv('GRIST_LOG_SKIP_HTTP', 'true');
 }
 
 // Use a distinct cookie.  Bump version to 2.
@@ -31,10 +29,11 @@ if (!process.env.GRIST_SINGLE_ORG) {
   setDefaultEnv('GRIST_ORG_IN_PATH', 'true');
 }
 
-setDefaultEnv('GRIST_UI_FEATURES', 'helpCenter,billing,templates,multiSite,multiAccounts,sendToDrive,createSite');
+setDefaultEnv('GRIST_UI_FEATURES',
+  'helpCenter,billing,templates,multiSite,multiAccounts,sendToDrive,createSite,supportGrist');
 setDefaultEnv('GRIST_WIDGET_LIST_URL', commonUrls.gristLabsWidgetRepository);
 import {updateDb} from 'app/server/lib/dbUtils';
-import {main as mergedServerMain, parseServerTypes} from 'app/server/mergedServerMain';
+import {MergedServer, parseServerTypes} from 'app/server/MergedServer';
 import * as fse from 'fs-extra';
 import {runPrometheusExporter} from './prometheus-exporter';
 
@@ -79,17 +78,12 @@ async function setupDb() {
       }
       const profile = {email, name: email};
       const user = await db.getUserByLogin(email, {profile});
-      if (!user) {
-        // This should not happen.
-        throw new Error('failed to create GRIST_DEFAULT_EMAIL user');
-      }
       db.unwrapQueryResult(await db.addOrg(user, {
         name: org,
         domain: org,
       }, {
         setUserAsOwner: false,
         useNewPlan: true,
-        planType: TEAM_FREE_PLAN
       }));
     }
   }
@@ -129,14 +123,16 @@ export async function main() {
   }
 
   // Launch single-port, self-contained version of Grist.
-  const server = await mergedServerMain(G.port, serverTypes);
+  const mergedServer = await MergedServer.create(G.port, serverTypes);
+  await mergedServer.run();
   if (process.env.GRIST_TESTING_SOCKET) {
-    await server.addTestingHooks();
+    await mergedServer.flexServer.addTestingHooks();
   }
   if (process.env.GRIST_SERVE_PLUGINS_PORT) {
-    await server.startCopy('pluginServer', parseInt(process.env.GRIST_SERVE_PLUGINS_PORT, 10));
+    await mergedServer.flexServer.startCopy('pluginServer', parseInt(process.env.GRIST_SERVE_PLUGINS_PORT, 10));
   }
-  return server;
+
+  return mergedServer.flexServer;
 }
 
 if (require.main === module) {

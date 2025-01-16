@@ -176,6 +176,21 @@ export async function firstDefined<T>(...list: Array<() => Promise<T>>): Promise
 }
 
 /**
+ * Returns the number repesentation of `value`, or `defaultVal` if it cannot
+ * be represented as a valid number.
+ */
+export function numberOrDefault<T>(value: unknown, defaultVal: T): number | T {
+  if (typeof value === 'number') {
+    return !Number.isNaN(value) ? value : defaultVal;
+  } else if (typeof value === 'string') {
+    const maybeNumber = Number.parseFloat(value);
+    return !Number.isNaN(maybeNumber) ? maybeNumber : defaultVal;
+  } else {
+    return defaultVal;
+  }
+}
+
+/**
  * Parses json and returns the result, or returns defaultVal if parsing fails.
  */
 export function safeJsonParse(json: string, defaultVal: any): any {
@@ -984,7 +999,11 @@ export function useBindable<T>(use: UseCBOwner, obs: BindableValue<T>): T {
 /**
  * Useful helper for simple boolean negation.
  */
-export const not = (obs: Observable<any>|IKnockoutReadObservable<any>) => (use: UseCBOwner) => !use(obs);
+export const not = (obs: Observable<any>|IKnockoutReadObservable<any>|boolean|undefined|null) => (use: UseCBOwner) =>  {
+  if (typeof obs === 'boolean') { return !obs; }
+  if (obs === null || obs === undefined) { return true; }
+  return !use(obs);
+};
 
 /**
  * Get a set of up to `count` distinct values of `values`.
@@ -1054,3 +1073,19 @@ export function computedOwned<T>(
 }
 
 export type Constructor<T> = new (...args: any[]) => T;
+
+/**
+ * Simple memoization function that caches the result of a function call based on its arguments.
+ * Unlike lodash's memoize, it uses all arguments to generate the key.
+ */
+export function cached<T>(fn: T): T {
+  const dict = new Map();
+  const impl = (...args: any[]) => {
+    const key = JSON.stringify(args);
+    if (!dict.has(key)) {
+      dict.set(key, (fn as any)(...args));
+    }
+    return dict.get(key);
+  };
+  return impl as any as T;
+}

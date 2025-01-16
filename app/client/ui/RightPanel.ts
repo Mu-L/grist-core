@@ -16,7 +16,7 @@
 import * as commands from 'app/client/components/commands';
 import {FieldModel} from 'app/client/components/Forms/Field';
 import {FormView} from 'app/client/components/Forms/FormView';
-import {UnmappedFieldsConfig} from 'app/client/components/Forms/UnmappedFieldsConfig';
+import {MappedFieldsConfig} from 'app/client/components/Forms/MappedFieldsConfig';
 import {GristDoc, IExtraTool, TabContent} from 'app/client/components/GristDoc';
 import {EmptyFilterState} from "app/client/components/LinkingState";
 import {RefSelect} from 'app/client/components/RefSelect';
@@ -29,16 +29,17 @@ import {logTelemetryEvent} from 'app/client/lib/telemetry';
 import {reportError} from 'app/client/models/AppModel';
 import {ColumnRec, ViewSectionRec} from 'app/client/models/DocModel';
 import {CustomSectionConfig} from 'app/client/ui/CustomSectionConfig';
+import {showCustomWidgetGallery} from 'app/client/ui/CustomWidgetGallery';
 import {buildDescriptionConfig} from 'app/client/ui/DescriptionConfig';
 import {BuildEditorOptions} from 'app/client/ui/FieldConfig';
 import {GridOptions} from 'app/client/ui/GridOptions';
 import {textarea} from 'app/client/ui/inputs';
 import {attachPageWidgetPicker, IPageWidget, toPageWidget} from 'app/client/ui/PageWidgetPicker';
 import {PredefinedCustomSectionConfig} from "app/client/ui/PredefinedCustomSectionConfig";
-import {cssLabel} from 'app/client/ui/RightPanelStyles';
+import {cssLabel, cssSeparator} from 'app/client/ui/RightPanelStyles';
 import {linkId, NoLink, selectBy} from 'app/client/ui/selectBy';
 import {VisibleFieldsConfig} from 'app/client/ui/VisibleFieldsConfig';
-import {getTelemetryWidgetTypeFromVS, widgetTypesMap} from "app/client/ui/widgetTypesMap";
+import {getTelemetryWidgetTypeFromVS, getWidgetTypes} from "app/client/ui/widgetTypesMap";
 import {basicButton, primaryButton} from 'app/client/ui2018/buttons';
 import {buttonSelect} from 'app/client/ui2018/buttonSelect';
 import {labeledSquareCheckbox} from 'app/client/ui2018/checkbox';
@@ -220,10 +221,10 @@ export class RightPanel extends Disposable {
 
   private _buildStandardHeader() {
     return dom.maybe(this._pageWidgetType, (type) => {
-      const widgetInfo = widgetTypesMap.get(type) || {label: 'Table', icon: 'TypeTable'};
+      const widgetInfo = getWidgetTypes(type);
       const fieldInfo = getFieldType(type);
       return [
-        cssTopBarItem(cssTopBarIcon(widgetInfo.icon), widgetInfo.label,
+        cssTopBarItem(cssTopBarIcon(widgetInfo.icon), widgetInfo.getLabel(),
           cssTopBarItem.cls('-selected', (use) => use(this._topTab) === 'pageWidget'),
           dom.on('click', () => this._topTab.set("pageWidget")),
           testId('right-tab-pagewidget')),
@@ -526,7 +527,7 @@ export class RightPanel extends Disposable {
       dom.maybe((use) => use(this._pageWidgetType) === 'custom', () => {
         const parts = vct._buildCustomTypeItems() as any[];
         return [
-          cssLabel(t("CUSTOM")),
+          cssSeparator(),
           // If 'customViewPlugin' feature is on, show the toggle that allows switching to
           // plugin mode. Note that the default mode for a new 'custom' view is 'url', so that's
           // the only one that will be shown without the feature flag.
@@ -559,7 +560,7 @@ export class RightPanel extends Disposable {
 
       dom.maybe(this._isForm, () => [
         cssSeparator(),
-        dom.create(UnmappedFieldsConfig, activeSection),
+        dom.create(MappedFieldsConfig, activeSection),
       ]),
     ]);
   }
@@ -880,13 +881,20 @@ export class RightPanel extends Disposable {
 
   private _createPageWidgetPicker(): DomElementMethod {
     const gristDoc = this._gristDoc;
-    const section = gristDoc.viewModel.activeSection;
-    const onSave = (val: IPageWidget) => gristDoc.saveViewSection(section.peek(), val);
-    return (elem) => { attachPageWidgetPicker(elem, gristDoc, onSave, {
-      buttonLabel:  t("Save"),
-      value: () => toPageWidget(section.peek()),
-      selectBy: (val) => gristDoc.selectBy(val),
-    }); };
+    const {activeSection} = gristDoc.viewModel;
+    const onSave = async (val: IPageWidget) => {
+      const {id} = await gristDoc.saveViewSection(activeSection.peek(), val);
+      if (val.type === 'custom') {
+        showCustomWidgetGallery(gristDoc, {sectionRef: id()});
+      }
+    };
+    return (elem) => {
+      attachPageWidgetPicker(elem, gristDoc, onSave, {
+        buttonLabel:  t("Save"),
+        value: () => toPageWidget(activeSection.peek()),
+        selectBy: (val) => gristDoc.selectBy(val),
+      });
+    };
   }
 
   // Returns dom for a section item.
@@ -955,11 +963,20 @@ export class RightPanel extends Disposable {
       ),
       cssLabel(t("Redirection")),
       cssRow(
-        labeledSquareCheckbox(redirection, t('Redirect automatically after submission')),
+        labeledSquareCheckbox(
+          redirection,
+          t("Redirect automatically after submission"),
+          testId("form-redirect")
+        )
       ),
       cssRow(
-        cssTextInput(successURL, (val) => successURL.set(val), {placeholder: t('Enter redirect URL')}),
-        dom.show(redirection),
+        cssTextInput(
+          successURL,
+          (val) => successURL.set(val),
+          { placeholder: t("Enter redirect URL") },
+          testId("form-redirect-url")
+        ),
+        dom.show(redirection)
       ),
     ];
   }
@@ -996,19 +1013,11 @@ export class RightPanel extends Disposable {
       const fieldBox = box as FieldModel;
       return use(fieldBox.field);
     });
-    const selectedColumn = Computed.create(owner, (use) => use(selectedField) && use(use(selectedField)!.origCol));
-
-    const hasText = Computed.create(owner, (use) => {
+    const selectedBoxWithOptions = Computed.create(owner, (use) => {
       const box = use(selectedBox);
-      if (!box) { return false; }
-      switch (box.type) {
-        case 'Submit':
-        case 'Paragraph':
-        case 'Label':
-          return true;
-        default:
-          return false;
-      }
+      if (!box || !['Paragraph', 'Label'].includes(box.type)) { return null; }
+
+      return box;
     });
 
     return domAsync(imports.loadViewPane().then(() => buildConfigContainer(cssSection(
@@ -1036,24 +1045,12 @@ export class RightPanel extends Disposable {
               testId('field-label'),
             ),
           ),
-          // TODO: this is for V1 as it requires full cell editor here.
-          // cssLabel(t("Default field value")),
-          // cssRow(
-          //   cssTextInput(
-          //     fromKo(defaultField),
-          //     (val) => defaultField.setAndSave(val),
-          //   ),
-          // ),
           dom.maybe<FieldBuilder|null>(fieldBuilder, builder => [
             cssSeparator(),
             cssLabel(t("COLUMN TYPE")),
             cssSection(
               builder.buildSelectTypeDom(),
             ),
-            // V2 thing
-            // cssSection(
-            //   builder.buildSelectWidgetDom(),
-            // ),
             cssSection(
               builder.buildFormConfigDom(),
             ),
@@ -1062,34 +1059,42 @@ export class RightPanel extends Disposable {
       }),
 
       // Box config
-      dom.maybe(use => use(selectedColumn) ? null : use(selectedBox), (box) => [
+      dom.maybe(selectedBoxWithOptions, (box) => [
         cssLabel(dom.text(box.type)),
-        dom.maybe(hasText, () => [
-          cssRow(
-            cssTextArea(
-              box.prop('text'),
-              {onInput: true, autoGrow: true},
-              dom.on('blur', () => box.save().catch(reportError)),
-              {placeholder: t('Enter text')},
-            ),
+        cssRow(
+          cssTextArea(
+            box.prop('text'),
+            {onInput: true, autoGrow: true},
+            dom.on('blur', () => box.save().catch(reportError)),
+            {placeholder: t('Enter text')},
           ),
-          cssRow(
-            buttonSelect(box.prop('alignment'), [
-              {value: 'left',   icon: 'LeftAlign'},
-              {value: 'center', icon: 'CenterAlign'},
-              {value: 'right',  icon: 'RightAlign'}
-            ]),
-            dom.autoDispose(box.prop('alignment').addListener(() => box.save().catch(reportError))),
-          )
-        ]),
+        ),
+        cssRow(
+          buttonSelect(box.prop('alignment'), [
+            {value: 'left',   icon: 'LeftAlign'},
+            {value: 'center', icon: 'CenterAlign'},
+            {value: 'right',  icon: 'RightAlign'}
+          ]),
+          dom.autoDispose(box.prop('alignment').addListener(() => box.save().catch(reportError))),
+        )
       ]),
 
       // Default.
-      dom.maybe(u => !u(selectedColumn) && !u(selectedBox), () => [
-        cssLabel(t('Layout')),
+      dom.maybe(u => !u(selectedField) && !u(selectedBoxWithOptions), () => [
+        buildFormConfigPlaceholder(),
       ])
     ))));
   }
+}
+
+function buildFormConfigPlaceholder() {
+  return cssFormConfigPlaceholder(
+    cssFormConfigImg(),
+    cssFormConfigMessage(
+      cssFormConfigMessageTitle(t('No field selected')),
+      dom('div', t('Select a field in the form widget to configure.')),
+    )
+  );
 }
 
 function disabledSection() {
@@ -1186,21 +1191,35 @@ const cssTopBarItem = styled('div', `
   flex: 1 1 0px;
   height: 100%;
   background-color: ${theme.rightPanelTabBg};
-  font-weight: ${vars.headerControlTextWeight};
+  border-right: 1px solid ${theme.rightPanelTabBg};
+  border-left: 1px solid ${theme.rightPanelTabBg};
+  border-bottom: 1px solid ${theme.rightPanelTabBorder};
+  font-weight: initial;
   color: ${theme.rightPanelTabFg};
   --icon-color: ${theme.rightPanelTabIcon};
   display: flex;
   align-items: center;
   cursor: default;
-
+  &:first-child {
+    border-left: 0;
+  }
+  &:last-child {
+    border-right: 0;
+  }
   &-selected {
     background-color: ${theme.rightPanelTabSelectedBg};
-    font-weight: initial;
+    font-weight: ${vars.headerControlTextWeight};
     color: ${theme.rightPanelTabSelectedFg};
-    --icon-color: ${theme.rightPanelTabSelectedFg};
+    --icon-color: ${theme.rightPanelTabSelectedIcon};
+    border-bottom-color: ${theme.rightPanelTabSelectedBg};
+    border-left-color: ${theme.rightPanelTabBorder};
+    border-right-color: ${theme.rightPanelTabBorder};
   }
   &:not(&-selected):hover {
     background-color: ${theme.rightPanelTabHoverBg};
+    border-left-color: ${theme.rightPanelTabHoverBg};
+    border-right-color: ${theme.rightPanelTabHoverBg};
+    color: ${theme.rightPanelTabHoverFg};
     --icon-color: ${theme.rightPanelTabIconHover};
   }
 `);
@@ -1275,10 +1294,6 @@ const cssTabContents = styled('div', `
   overflow: auto;
 `);
 
-const cssSeparator = styled('div', `
-  border-bottom: 1px solid ${theme.pagePanelsBorder};
-  margin-top: 16px;
-`);
 
 const cssConfigContainer = styled('div.test-config-container', `
   overflow: auto;
@@ -1428,4 +1443,34 @@ const cssLinkInfoPre = styled("pre", `
   padding: 6px;
   font-size: ${vars.smallFontSize};
   line-height: 1.2;
+`);
+
+const cssFormConfigPlaceholder = styled('div', `
+  display: flex;
+  flex-direction: column;
+  row-gap: 16px;
+  margin-top: 32px;
+  padding: 8px;
+`);
+
+const cssFormConfigImg = styled('div', `
+  height: 140px;
+  width: 100%;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-image: var(--icon-FormConfig);
+`);
+
+const cssFormConfigMessage = styled('div', `
+  display: flex;
+  flex-direction: column;
+  row-gap: 8px;
+  color: ${theme.text};
+  text-align: center;
+`);
+
+const cssFormConfigMessageTitle = styled('div', `
+  font-size: ${vars.largeFontSize};
+  font-weight: 600;
 `);

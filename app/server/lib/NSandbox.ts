@@ -230,6 +230,14 @@ export class NSandbox implements ISandbox {
     log.rawDebug('Sandbox memory', {memory, ...this._logMeta});
   }
 
+  public isProcessDown() {
+    return this._isReadClosed || this._isWriteClosed;
+  }
+
+  public getFlavor() {
+    return this._logMeta.flavor;
+  }
+
   /**
    * Get ready to communicate with a sandbox process using stdin,
    * stdout, and stderr.
@@ -466,6 +474,10 @@ const spawners = {
   gvisor,             // Gvisor's runsc sandbox.
   macSandboxExec,     // Use "sandbox-exec" on Mac.
   pyodide,            // Run data engine using pyodide.
+  skip: unsandboxed,  // Same as unsandboxed. Used to mean that the
+                      // user deliberately doesn't want sandboxing.
+                      // The "unsandboxed" setting is ambiguous in this
+                      // respect.
 };
 
 function isFlavor(flavor: string): flavor is keyof typeof spawners {

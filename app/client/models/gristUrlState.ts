@@ -169,11 +169,22 @@ export class UrlStateImpl {
    * E.g. setting 'docPage' will reuse previous 'doc', but setting 'org' or 'ws' will ignore it.
    */
   public updateState(prevState: IGristUrlState, newState: IGristUrlState): IGristUrlState {
-    const keepState = (newState.org || newState.ws || newState.homePage || newState.doc || isEmpty(newState) ||
-                       newState.account || newState.billing  || newState.activation || newState.welcome ||
-                       newState.supportGrist) ?
-      (prevState.org ? {org: prevState.org} : {}) :
-      prevState;
+    const keepState =
+      newState.org ||
+      newState.ws ||
+      newState.homePage ||
+      newState.doc ||
+      isEmpty(newState) ||
+      newState.account ||
+      newState.billing ||
+      newState.activation ||
+      newState.auditLogs ||
+      newState.welcome ||
+      newState.adminPanel
+        ? prevState.org
+          ? { org: prevState.org }
+          : {}
+        : prevState;
     return {...keepState, ...newState};
   }
 
@@ -197,6 +208,8 @@ export class UrlStateImpl {
     const billingReload = Boolean(prevState.billing) !== Boolean(newState.billing);
     // Reload when moving to/from an activation page.
     const activationReload = Boolean(prevState.activation) !== Boolean(newState.activation);
+    // Reload when moving to/from the audit logs page.
+    const auditLogsReload = Boolean(prevState.auditLogs) !== Boolean(newState.auditLogs);
     // Reload when moving to/from a welcome page.
     const welcomeReload = Boolean(prevState.welcome) !== Boolean(newState.welcome);
     // Reload when link keys change, which changes what the user can access
@@ -205,10 +218,20 @@ export class UrlStateImpl {
     const signupReload = [prevState.login, newState.login].includes('signup')
       && prevState.login !== newState.login;
     // Reload when moving to/from the support Grist page.
-    const supportGristReload = Boolean(prevState.supportGrist) !== Boolean(newState.supportGrist);
-    return Boolean(orgReload || accountReload || billingReload || activationReload ||
-      gristConfig.errPage || docReload || welcomeReload || linkKeysReload || signupReload ||
-      supportGristReload);
+    const adminPanelReload = Boolean(prevState.adminPanel) !== Boolean(newState.adminPanel);
+    return Boolean(
+      orgReload ||
+        accountReload ||
+        billingReload ||
+        activationReload ||
+        auditLogsReload ||
+        gristConfig.errPage ||
+        docReload ||
+        welcomeReload ||
+        linkKeysReload ||
+        signupReload ||
+        adminPanelReload
+    );
   }
 
   /**
@@ -224,7 +247,7 @@ export class UrlStateImpl {
 
 /**
  * Given value like `foo bar baz`, constructs URL by checking if `baz` is a valid URL and,
- * if not, prepending `http://`.
+ * if not, prepending `https://`.
  */
 export function constructUrl(value: CellValue): string {
   if (typeof value !== 'string') {
@@ -235,8 +258,8 @@ export function constructUrl(value: CellValue): string {
     // Try to construct a valid URL
     return (new URL(url)).toString();
   } catch (e) {
-    // Not a valid URL, so try to prefix it with http
-    return 'http://' + url;
+    // Not a valid URL, so try to prefix it with https
+    return 'https://' + url;
   }
 }
 

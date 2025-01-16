@@ -8,8 +8,9 @@ import {createEmptyOrgUsageSummary, OrgUsageSummary} from 'app/common/DocUsage';
 import {Document, Workspace} from 'app/common/UserAPI';
 import {Organization} from 'app/gen-server/entity/Organization';
 import {Product} from 'app/gen-server/entity/Product';
-import {HomeDBManager, UserChange} from 'app/gen-server/lib/HomeDBManager';
+import {HomeDBManager, UserChange} from 'app/gen-server/lib/homedb/HomeDBManager';
 import {TestServer} from 'test/gen-server/apiUtils';
+import {TEAM_FREE_PLAN} from 'app/common/Features';
 
 const assert = chai.assert;
 
@@ -48,9 +49,9 @@ describe('ApiServer', function() {
     homeUrl = await server.start(['home', 'docs']);
     dbManager = server.dbManager;
 
-    chimpyRef = await dbManager.getUserByLogin(chimpyEmail).then((user) => user!.ref);
-    kiwiRef = await dbManager.getUserByLogin(kiwiEmail).then((user) => user!.ref);
-    charonRef = await dbManager.getUserByLogin(charonEmail).then((user) => user!.ref);
+    chimpyRef = await dbManager.getUserByLogin(chimpyEmail).then((user) => user.ref);
+    kiwiRef = await dbManager.getUserByLogin(kiwiEmail).then((user) => user.ref);
+    charonRef = await dbManager.getUserByLogin(charonEmail).then((user) => user.ref);
 
     // Listen to user count updates and add them to an array.
     dbManager.on('userChange', ({org, countBefore, countAfter}: UserChange) => {
@@ -179,7 +180,7 @@ describe('ApiServer', function() {
     assert.equal(resp.status, 200);
     assert.deepEqual(resp.data.map((org: any) => org.name),
       ['Chimpyland', 'EmptyOrg', 'EmptyWsOrg', 'Fish', 'Flightless',
-        'FreeTeam', 'NASA', 'Primately', 'TestDailyApiLimit']);
+        'FreeTeam', 'NASA', 'Primately', 'TestAuditLogs', 'TestDailyApiLimit']);
     // personal orgs should have an owner and no domain
     // createdAt and updatedAt are omitted since exact times cannot be predicted.
     assert.deepEqual(omit(resp.data[0], 'createdAt', 'updatedAt'), {
@@ -920,6 +921,9 @@ describe('ApiServer', function() {
         status: null,
         externalId: null,
         externalOptions: null,
+        features: null,
+        stripePlanId: null,
+        paymentLink: null,
       },
     });
     assert.isNotNull(org.updatedAt);
@@ -2066,8 +2070,7 @@ describe('ApiServer', function() {
     // create a new user
     const profile = {email: 'meep@getgrist.com', name: 'Meep'};
     const user = await dbManager.getUserByLogin('meep@getgrist.com', {profile});
-    assert(user);
-    const userId = user!.id;
+    const userId = user.id;
     // set up an api key
     await dbManager.connection.query("update users set api_key = 'api_key_for_meep' where id = $1", [userId]);
 
@@ -2107,11 +2110,10 @@ describe('ApiServer', function() {
     const userBlank = await dbManager.getUserByLogin('blank@getgrist.com',
                                                      {profile: {email: 'blank@getgrist.com',
                                                       name: ''}});
-    assert(userBlank);
-    await dbManager.connection.query("update users set api_key = 'api_key_for_blank' where id = $1", [userBlank!.id]);
+    await dbManager.connection.query("update users set api_key = 'api_key_for_blank' where id = $1", [userBlank.id]);
 
     // check that user can delete themselves
-    resp = await axios.delete(`${homeUrl}/api/users/${userBlank!.id}`,
+    resp = await axios.delete(`${homeUrl}/api/users/${userBlank.id}`,
                               {data: {name: ""}, ...configForUser("blank")});
     assert.equal(resp.status, 200);
 
@@ -2151,7 +2153,7 @@ describe('ApiServer', function() {
         'best-friends-squad', false);
       await dbManager.connection.query(
         'update billing_accounts set product_id = (select id from products where name = $1) where id = $2',
-        ['teamFree', prevAccount.id]
+        [TEAM_FREE_PLAN, prevAccount.id]
       );
 
       const resp = await axios.post(`${homeUrl}/api/orgs/${freeTeamOrgId}/workspaces`, {
@@ -2208,6 +2210,7 @@ describe('ApiServer', function() {
         await server.dbManager.setDocsMetadata({[id]: {usage}});
       }
       await server.dbManager.setDocGracePeriodStart(docIds[docIds.length - 1], new Date(2000, 1, 1));
+      await server.dbManager.setDocGracePeriodStart(docIds[docIds.length - 2], new Date());
 
       // Check that what's reported by /usage is accurate.
       await assertOrgUsage(freeTeamOrgId, chimpy, {
@@ -2234,6 +2237,7 @@ describe('ApiServer', function() {
         dataSizeBytes: 999999999,
         attachmentsSizeBytes: 999999999,
       }}});
+      await server.dbManager.setDocGracePeriodStart(docId, new Date());
 
       // Check that /usage includes that document in the count.
       await assertOrgUsage(freeTeamOrgId, chimpy, {
@@ -2296,15 +2300,6 @@ describe('ApiServer', function() {
       assert.deepEqual(resp.data.map((ws: any) => ws.name), ['CRM', 'Invoice']);
       assert.deepEqual(resp.data[0].docs.map((doc: any) => doc.name), ['Lightweight CRM']);
       assert.deepEqual(resp.data[1].docs.map((doc: any) => doc.name), ['Expense Report', 'Timesheet']);
-
-      // Make a request to retrieve only the featured (pinned) templates.
-      const resp2 = await axios.get(`${homeUrl}/api/templates/?onlyFeatured=1`, nobody);
-      // Assert that the response includes only pinned documents.
-      assert.equal(resp2.status, 200);
-      assert.lengthOf(resp2.data, 2);
-      assert.deepEqual(resp.data.map((ws: any) => ws.name), ['CRM', 'Invoice']);
-      assert.deepEqual(resp2.data[0].docs.map((doc: any) => doc.name), ['Lightweight CRM']);
-      assert.deepEqual(resp2.data[1].docs, []);
 
       // Add a new document to the CRM workspace, but don't share it with everyone.
       await axios.post(`${homeUrl}/api/workspaces/${crmWsId}/docs`,

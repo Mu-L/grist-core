@@ -1,6 +1,6 @@
 import {ActionGroup} from 'app/common/ActionGroup';
 import {BulkAddRecord, CellValue, TableDataAction, UserAction} from 'app/common/DocActions';
-import {FormulaProperties} from 'app/common/GranularAccessClause';
+import {PredicateFormulaProperties} from 'app/common/PredicateFormula';
 import {FetchUrlOptions, UploadResult} from 'app/common/uploads';
 import {DocStateComparison, PermissionData, UserAccessData} from 'app/common/UserAPI';
 import {ParseOptions} from 'app/plugin/FileParserAPI';
@@ -92,8 +92,13 @@ export interface TransformColumn {
   widgetOptions: string;
 }
 
+export interface ImportParseOptions extends ParseOptions {
+  delimiter?: string;
+  encoding?: string;
+}
+
 export interface ImportResult {
-  options: ParseOptions;
+  options: ImportParseOptions;
   tables: ImportTableResult[];
 }
 
@@ -106,7 +111,7 @@ export interface ImportTableResult {
 }
 
 export interface ImportOptions {
-  parseOptions?: ParseOptions;         // Options for parsing the source file.
+  parseOptions?: ImportParseOptions;   // Options for parsing the source file.
   mergeOptionMaps?: MergeOptionsMap[]; // Options for merging fields, indexed by uploadFileIndex.
 }
 
@@ -283,6 +288,49 @@ export interface RemoteShareInfo {
   key: string;
 }
 
+/**
+ * Metrics gathered during formula calculations.
+ */
+export interface TimingInfo {
+  /**
+   * Total time spend evaluating a formula.
+   */
+  sum: number;
+  /**
+   * Number of times the formula was evaluated (for all rows).
+   */
+  count: number;
+  average: number;
+  max: number;
+}
+
+/**
+ * Metrics attached to a particular column in a table. Contains also marks if they were gathered.
+ * Currently we only mark the `OrderError` exception (so when formula calculation was restarted due to
+ * order dependency).
+ */
+export interface FormulaTimingInfo extends TimingInfo {
+  tableId: string;
+  colId: string;
+  marks?: Array<TimingInfo & {name: string}>;
+}
+
+/*
+ * Status of timing info collection. Contains intermediate results if engine is not busy at the moment.
+ */
+export interface TimingStatus {
+  /**
+   * If disabled then 'disabled', else 'active' or 'pending'. Pending means that the engine is busy
+   * and can't respond to confirm the status (but it used to be active before that).
+   */
+  status: 'active'|'pending'|'disabled';
+  /**
+   * Will be undefined if we can't get the timing info (e.g. if the document is locked by other call).
+   * Otherwise, contains the intermediate results gathered so far.
+   */
+  timing?: FormulaTimingInfo[];
+}
+
 export interface ActiveDocAPI {
   /**
    * Closes a document, and unsubscribes from its userAction events.
@@ -328,7 +376,7 @@ export interface ActiveDocAPI {
    * Imports files, removes previously created temporary hidden tables and creates the new ones.
    */
   importFiles(dataSource: DataSourceTransformed,
-              parseOptions: ParseOptions, prevTableIds: string[]): Promise<ImportResult>;
+              parseOptions: ImportParseOptions, prevTableIds: string[]): Promise<ImportResult>;
 
   /**
    * Finishes import files, creates the new tables, and cleans up temporary hidden tables and uploads.
@@ -374,12 +422,7 @@ export interface ActiveDocAPI {
    * Find and return a list of auto-complete suggestions that start with `txt`, when editing a
    * formula in table `tableId` and column `columnId`.
    */
-  autocomplete(txt: string, tableId: string, columnId: string, rowId: UIRowId): Promise<ISuggestionWithValue[]>;
-
-  /**
-   * Removes the current instance from the doc.
-   */
-  removeInstanceFromDoc(): Promise<void>;
+  autocomplete(txt: string, tableId: string, columnId: string, rowId: UIRowId | null): Promise<ISuggestionWithValue[]>;
 
   /**
    * Get recent actions in ActionGroup format with summaries included.
@@ -420,7 +463,7 @@ export interface ActiveDocAPI {
   /**
    * Check if an ACL formula is valid. If not, will throw an error with an explanation.
    */
-  checkAclFormula(text: string): Promise<FormulaProperties>;
+  checkAclFormula(text: string): Promise<PredicateFormulaProperties>;
 
   /**
    * Get a token for out-of-band access to the document.
@@ -444,5 +487,18 @@ export interface ActiveDocAPI {
    */
   getUsersForViewAs(): Promise<PermissionDataWithExtraUsers>;
 
-  getShare(linkId: string): Promise<RemoteShareInfo>;
+  /**
+   * Get a share info associated with the document.
+   */
+  getShare(linkId: string): Promise<RemoteShareInfo|null>;
+
+  /**
+   * Starts collecting timing information from formula evaluations.
+   */
+  startTiming(): Promise<void>;
+
+  /**
+   * Stops collecting timing information and returns the collected data.
+   */
+  stopTiming(): Promise<TimingInfo[]>;
 }

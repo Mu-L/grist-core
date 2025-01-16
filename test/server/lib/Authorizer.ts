@@ -1,5 +1,5 @@
 import {parseUrlId} from 'app/common/gristUrls';
-import {HomeDBManager} from 'app/gen-server/lib/HomeDBManager';
+import {HomeDBManager} from 'app/gen-server/lib/homedb/HomeDBManager';
 import {DocManager} from 'app/server/lib/DocManager';
 import {FlexServer} from 'app/server/lib/FlexServer';
 import axios from 'axios';
@@ -10,20 +10,20 @@ import {configForUser, getGristConfig} from 'test/gen-server/testUtils';
 import {createDocTools} from 'test/server/docTools';
 import {openClient} from 'test/server/gristClient';
 import * as testUtils from 'test/server/testUtils';
-import uuidv4 from 'uuid/v4';
+import {v4 as uuidv4} from 'uuid';
 
 let serverUrl: string;
 let server: FlexServer;
 let dbManager: HomeDBManager;
 
 async function activateServer(home: FlexServer, docManager: DocManager) {
-  await home.loadConfig();
+  await home.addLoginMiddleware();
   await home.initHomeDBManager();
   home.addHosts();
   home.addDocWorkerMap();
   home.addAccessMiddleware();
   dbManager = home.getHomeDBManager();
-  await home.loadConfig();
+  await home.addLoginMiddleware();
   home.addSessions();
   home.addHealthCheck();
   docManager.testSetHomeDbManager(dbManager);
@@ -34,6 +34,8 @@ async function activateServer(home: FlexServer, docManager: DocManager) {
   home.addJsonSupport();
   await home.addLandingPages();
   home.addHomeApi();
+  home.addAuditLogger();
+  home.addScimApi();
   await home.addTelemetry();
   await home.addDoc();
   home.addApiErrorHandlers();

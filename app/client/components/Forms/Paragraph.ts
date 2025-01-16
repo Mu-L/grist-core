@@ -1,10 +1,12 @@
-import * as css from './styles';
+import {FormLayoutNode} from 'app/client/components/FormRenderer';
+import {buildEditor} from 'app/client/components/Forms/Editor';
 import {BoxModel} from 'app/client/components/Forms/Model';
+import * as css from 'app/client/components/Forms/styles';
 import {textarea} from 'app/client/ui/inputs';
 import {theme} from 'app/client/ui2018/cssVars';
 import {not} from 'app/common/gutil';
 import {Computed, dom, Observable, styled} from 'grainjs';
-import {buildEditor} from 'app/client/components/Forms/Editor';
+import {v4 as uuidv4} from 'uuid';
 
 export class ParagraphModel extends BoxModel {
   public edit = Observable.create(this, false);
@@ -17,7 +19,6 @@ export class ParagraphModel extends BoxModel {
   public override render(): HTMLElement {
     const box = this;
     const editMode = box.edit;
-    let element: HTMLElement;
     const text = this.prop('text', this.defaultValue) as Observable<string|undefined>;
 
     // There is a spacial hack here. We might be created as a separator component, but the rendering
@@ -27,6 +28,7 @@ export class ParagraphModel extends BoxModel {
     return buildEditor({
       box: this,
       overlay: this._overlay,
+      editMode,
       content: css.cssMarkdownRendered(
         css.markdown(use => use(text) || '', dom.hide(editMode)),
         dom.maybe(use => !use(text) && !use(editMode), () => cssEmpty('(empty)')),
@@ -41,22 +43,29 @@ export class ParagraphModel extends BoxModel {
         this.cssClass ? dom.cls(this.cssClass, not(editMode)) : null,
         dom.maybe(editMode, () => {
           const draft = Observable.create(null, text.get() || '');
-          setTimeout(() => element?.focus(), 10);
-          return [
-            element = cssTextArea(draft, {autoGrow: true, onInput: true},
-              cssTextArea.cls('-edit', editMode),
-              css.saveControls(editMode, (ok) => {
-                if (ok && editMode.get()) {
-                  text.set(draft.get());
-                  this.save().catch(reportError);
-                }
-              })
-            ),
-          ];
+          return cssTextArea(draft, {autoGrow: true, onInput: true},
+            cssTextArea.cls('-edit', editMode),
+            (elem) => {
+              setTimeout(() => {
+                elem.focus();
+                elem.setSelectionRange(elem.value.length, elem.value.length);
+              }, 10);
+            },
+            css.saveControls(editMode, (ok) => {
+              if (ok && editMode.get()) {
+                text.set(draft.get());
+                this.save().catch(reportError);
+              }
+            })
+          );
         }),
       )
     });
   }
+}
+
+export function Paragraph(text: string, alignment?: 'left'|'right'|'center'): FormLayoutNode {
+  return {id: uuidv4(), type: 'Paragraph', text, alignment};
 }
 
 const cssTextArea = styled(textarea, `

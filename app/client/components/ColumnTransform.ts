@@ -91,9 +91,9 @@ export class ColumnTransform extends Disposable {
   protected buildEditorDom(optInit?: string) {
     if (!this.editor) {
       this.editor = this.autoDispose(AceEditor.create({
-        gristDoc: this.gristDoc,
         observable: this.transformColumn.formula,
         saveValueOnBlurEvent: false,
+        // TODO: set `getSuggestions` (see `FormulaEditor.ts` for an example).
       }));
     }
     return this.editor.buildDom((aceObj: any) => {
@@ -234,9 +234,10 @@ export class ColumnTransform extends Disposable {
     } finally {
       // Wait until the change completed to set column back, to avoid value flickering.
       field.colRef(origRef);
-      void tableData.sendTableAction(['RemoveColumn', transformColId]);
+      const cleanupProm = tableData.sendTableAction(['RemoveColumn', transformColId]);
       this.cleanup();
       this.dispose();
+      await cleanupProm;
     }
   }
 

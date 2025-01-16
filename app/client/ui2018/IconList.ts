@@ -23,6 +23,7 @@ export type IconName = "ChartArea" |
   "FieldFunctionEqual" |
   "FieldInteger" |
   "FieldLink" |
+  "FieldMarkdown" |
   "FieldNumeric" |
   "FieldReference" |
   "FieldSpinner" |
@@ -76,6 +77,7 @@ export type IconName = "ChartArea" |
   "FontItalic" |
   "FontStrikethrough" |
   "FontUnderline" |
+  "FormConfig" |
   "FunctionResult" |
   "GreenArrow" |
   "Grow" |
@@ -118,6 +120,7 @@ export type IconName = "ChartArea" |
   "Public" |
   "PublicColor" |
   "PublicFilled" |
+  "Question" |
   "Redo" |
   "Remove" |
   "RemoveBig" |
@@ -132,13 +135,17 @@ export type IconName = "ChartArea" |
   "Separator" |
   "Settings" |
   "Share" |
+  "Skip" |
   "Sort" |
   "Sparks" |
+  "Star" |
   "Tick" |
   "TickSolid" |
   "Undo" |
   "Validation" |
   "Video" |
+  "VideoPlay" |
+  "VideoPlay2" |
   "Warning" |
   "Widget" |
   "Wrap" |
@@ -179,6 +186,7 @@ export const IconList: IconName[] = ["ChartArea",
   "FieldFunctionEqual",
   "FieldInteger",
   "FieldLink",
+  "FieldMarkdown",
   "FieldNumeric",
   "FieldReference",
   "FieldSpinner",
@@ -232,6 +240,7 @@ export const IconList: IconName[] = ["ChartArea",
   "FontItalic",
   "FontStrikethrough",
   "FontUnderline",
+  "FormConfig",
   "FunctionResult",
   "GreenArrow",
   "Grow",
@@ -274,6 +283,7 @@ export const IconList: IconName[] = ["ChartArea",
   "Public",
   "PublicColor",
   "PublicFilled",
+  "Question",
   "Redo",
   "Remove",
   "RemoveBig",
@@ -288,13 +298,17 @@ export const IconList: IconName[] = ["ChartArea",
   "Separator",
   "Settings",
   "Share",
+  "Skip",
   "Sort",
   "Sparks",
+  "Star",
   "Tick",
   "TickSolid",
   "Undo",
   "Validation",
   "Video",
+  "VideoPlay",
+  "VideoPlay2",
   "Warning",
   "Widget",
   "Wrap",

@@ -17,22 +17,19 @@ import {
 import {TelemetryPrefsWithSources} from 'app/common/InstallAPI';
 import {Activation} from 'app/gen-server/entity/Activation';
 import {Activations} from 'app/gen-server/lib/Activations';
-import {HomeDBManager} from 'app/gen-server/lib/HomeDBManager';
+import {HomeDBManager} from 'app/gen-server/lib/homedb/HomeDBManager';
 import {RequestWithLogin} from 'app/server/lib/Authorizer';
-import {getDocSessionUser, OptDocSession} from 'app/server/lib/DocSession';
 import {expressWrap} from 'app/server/lib/expressWrap';
 import {GristServer} from 'app/server/lib/GristServer';
 import {hashId} from 'app/server/lib/hashingUtils';
 import {LogMethods} from 'app/server/lib/LogMethods';
 import {stringParam} from 'app/server/lib/requestUtils';
-import {getLogMetaFromDocSession} from 'app/server/lib/serverUtils';
+import {getFullUser, getLogMeta, isRequest, RequestOrSession} from 'app/server/lib/sessionUtils';
 import * as cookie from 'cookie';
 import * as express from 'express';
 import fetch from 'node-fetch';
 import merge = require('lodash/merge');
 import pickBy = require('lodash/pickBy');
-
-type RequestOrSession = RequestWithLogin | OptDocSession | null;
 
 interface RequestWithMatomoVisitorId extends RequestWithLogin {
   /**
@@ -58,7 +55,6 @@ export interface ITelemetry {
   ): Promise<void>;
   shouldLogEvent(name: TelemetryEvent): boolean;
   addEndpoints(app: express.Express): void;
-  addPages(app: express.Express, middleware: express.RequestHandler[]): void;
   getTelemetryConfig(requestOrSession?: RequestOrSession): TelemetryConfig | undefined;
   fetchTelemetryPrefs(): Promise<void>;
 }
@@ -76,8 +72,8 @@ export class Telemetry implements ITelemetry {
   private readonly _forwardTelemetryEventsUrl = process.env.GRIST_TELEMETRY_URL ||
     'https://telemetry.getgrist.com/api/telemetry';
   private _numPendingForwardEventRequests = 0;
-  private readonly _logger = new LogMethods('Telemetry ', (requestOrSession: RequestOrSession | undefined) =>
-    this._getLogMeta(requestOrSession));
+  private readonly _logger = new LogMethods<RequestOrSession | undefined>('Telemetry ', (requestOrSession) =>
+    getLogMeta(requestOrSession));
   private readonly _telemetryLogger = new LogMethods<string>('Telemetry ', (eventType) => ({
     eventType,
   }));
@@ -196,15 +192,6 @@ export class Telemetry implements ITelemetry {
     }));
   }
 
-  public addPages(app: express.Application, middleware: express.RequestHandler[]) {
-    if (this._deploymentType === 'core') {
-      app.get('/support', ...middleware, expressWrap(async (req, resp) => {
-        return this._gristServer.sendAppPage(req, resp,
-          {path: 'app.html', status: 200, config: {}});
-      }));
-    }
-  }
-
   public getTelemetryConfig(requestOrSession?: RequestOrSession): TelemetryConfig | undefined {
     const prefs = this._telemetryPrefs;
     if (!prefs) {
@@ -285,14 +272,14 @@ export class Telemetry implements ITelemetry {
     if (requestOrSession) {
       let email: string | undefined;
       let org: string | undefined;
-      if ('get' in requestOrSession) {
+      if (isRequest(requestOrSession)) {
         email = requestOrSession.user?.loginEmail;
         org = requestOrSession.org;
         if (isAnonymousUser) {
           visitorId = this._getAndSetMatomoVisitorId(requestOrSession);
         }
       } else {
-        email = getDocSessionUser(requestOrSession)?.email;
+        email = getFullUser(requestOrSession)?.email;
         org = requestOrSession.client?.getOrg() ?? requestOrSession.req?.org;
       }
       if (email) {
@@ -344,6 +331,17 @@ export class Telemetry implements ITelemetry {
     try {
       this._numPendingForwardEventRequests += 1;
       const {category: eventCategory} = TelemetryContracts[event];
+
+      if (metadata) {
+        if ('installationId' in metadata ||
+            'eventSource' in metadata ||
+            'eventName' in metadata ||
+            'eventCategory' in metadata)
+        {
+          throw new Error('metadata contains reserved keys');
+        }
+      }
+
       await this._doForwardEvent(JSON.stringify({
         event,
         metadata: {
@@ -377,21 +375,6 @@ export class Telemetry implements ITelemetry {
     } catch (e) {
       this._logger.error(null, 'activation is undefined', e);
       throw new ApiError('Telemetry is not ready', 500);
-    }
-  }
-
-  private _getLogMeta(requestOrSession?: RequestOrSession) {
-    if (!requestOrSession) { return {}; }
-
-    if ('get' in requestOrSession) {
-      return {
-        org: requestOrSession.org,
-        email: requestOrSession.user?.loginEmail,
-        userId: requestOrSession.userId,
-        altSessionId: requestOrSession.altSessionId,
-      };
-    } else {
-      return getLogMetaFromDocSession(requestOrSession);
     }
   }
 }
